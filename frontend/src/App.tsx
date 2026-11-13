@@ -6,6 +6,23 @@ import { useNEAR } from './context/useNear';
 import './App.css';
 
 type SectionId = 'home' | 'circle' | 'create' | 'activity' | 'profile' | 'settings' | 'help';
+type ActivityItem = {
+  id: string;
+  circleId: number;
+  kind: 'contribution' | 'payout' | 'vote';
+  title: string;
+  detail: string;
+  status: string;
+  overdue?: boolean;
+  deadline?: number;
+};
+type RecentActivityItem = {
+  id: string;
+  circleId: number;
+  round: number;
+  title: string;
+  detail: string;
+};
 
 function formatAjusd(units: string): string {
   return (Number(units) / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 6 });
@@ -17,8 +34,11 @@ function memberLabel(accountId: string, walletId: string): string {
   return `${accountId.slice(0, 9)}…${accountId.slice(-5)}`;
 }
 
-function memberInitials(accountId: string | null, walletId: string, slot: number): string {
+function memberInitials(accountId: string | null, walletId: string, slot: number, ownName?: string): string {
   if (!accountId) return String(slot + 1).padStart(2, '0');
+  if (accountId === walletId && ownName) {
+    return ownName.split(/\s+/).slice(0, 2).map((part) => part[0]).join('').toUpperCase();
+  }
   if (accountId === walletId) return 'ME';
   const name = accountId.includes('-') ? accountId.split('-')[1] : accountId;
   return name.slice(0, 2).toUpperCase();
@@ -32,9 +52,21 @@ function proposalDescription(proposal: CircleProposal, walletId: string): string
   return 'Continue this circle with its remaining members';
 }
 
+function activityDeadline(deadline: number): { label: string; overdue: boolean } {
+  const now = new Date();
+  const due = new Date(deadline * 1000);
+  if (due.getTime() < now.getTime()) return { label: 'Past due date', overdue: true };
+  const sameDay = now.getFullYear() === due.getFullYear()
+    && now.getMonth() === due.getMonth()
+    && now.getDate() === due.getDate();
+  return {
+    label: sameDay ? 'Due today' : `Due ${due.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`,
+    overdue: false,
+  };
+}
+
 function friendlyTransactionError(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : String(error || '');
-  if (message.includes('Wallet proxy not initialized')) return 'Your sign-in wallet needed to reconnect. We are preparing it again; try this action once setup finishes.';
   if (/not enough|insufficient/i.test(message)) return 'There is not enough testnet NEAR in your account to cover this step. Ask the prototype organiser to top up your test account.';
   if (/already paid/i.test(message)) return 'Your contribution for this round is already recorded.';
   if (/faucet limit/i.test(message)) return 'The test-token faucet can provide up to 10,000 AJUSD per request.';
@@ -46,9 +78,54 @@ export default function App() {
   const { login } = useLogin();
   const { logout } = useLogout();
   const { nearAccount, provider, walletId, walletLoading, walletError, retryWalletSetup } = useNEAR();
+  const [customDisplayName, setCustomDisplayName] = useState('');
+  const [displayNameDraft, setDisplayNameDraft] = useState('');
+  const [displayNameSaved, setDisplayNameSaved] = useState(false);
+  const [expandedPaymentMember, setExpandedPaymentMember] = useState<number | null>(null);
+
+  const suggestedDisplayName = user?.google?.name
+    || user?.google?.email?.split('@')[0]
+    || user?.email?.address?.split('@')[0]
+    || '';
+
+  useEffect(() => {
+    if (!authenticated || !user?.id) {
+      setCustomDisplayName('');
+      setDisplayNameDraft('');
+      return;
+    }
+
+    const storageKey = `ajocircle.display-name.${user.id}`;
+    let savedName = '';
+    try {
+      savedName = window.localStorage.getItem(storageKey)?.trim() || '';
+    } catch (error) {
+      console.warn('Could not read the saved display name', error);
+    }
+    setCustomDisplayName(savedName);
+    setDisplayNameDraft(savedName || suggestedDisplayName);
+    setDisplayNameSaved(false);
+  }, [authenticated, user?.id, suggestedDisplayName]);
+
+  const saveDisplayName = () => {
+    const name = displayNameDraft.trim();
+    if (name.length < 2 || name.length > 32) return;
+    setCustomDisplayName(name);
+    setDisplayNameDraft(name);
+    setDisplayNameSaved(true);
+    if (user?.id) {
+      try {
+        window.localStorage.setItem(`ajocircle.display-name.${user.id}`, name);
+      } catch (error) {
+        console.warn('Could not save the display name on this device', error);
+      }
+    }
+  };
 
   // Active Section Routing (matches #home, #circle, etc.)
   const [activeTab, setActiveTab] = useState<SectionId>('home');
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityError, setActivityError] = useState(false);
 
   // Live on-chain circles
   const [onChainCircles, setOnChainCircles] = useState<OnChainCircle[]>([]);
@@ -84,16 +161,30 @@ export default function App() {
   const [payoutBusy, setPayoutBusy] = useState<'request' | 'confirm' | null>(null);
   const [payoutNotice, setPayoutNotice] = useState<string | null>(null);
   const [payoutError, setPayoutError] = useState<string | null>(null);
+  const [walletActionRecovery, setWalletActionRecovery] = useState<string | null>(null);
   const [voteBusyId, setVoteBusyId] = useState<number | null>(null);
   const [voteNotice, setVoteNotice] = useState<string | null>(null);
   const [voteError, setVoteError] = useState<string | null>(null);
   const walletActionDisabled = authenticated && (walletLoading || !nearAccount || Boolean(walletError));
 
-  const recoverWalletAfterSigningError = (error: unknown, fallback: string) => {
+  const recoverWalletAfterSigningError = (error: unknown, actionKey: string) => {
     const message = error instanceof Error ? error.message : String(error || '');
-    if (message.includes('Wallet proxy not initialized')) void retryWalletSetup();
-    return friendlyTransactionError(error, fallback);
+    if (!message.includes('Wallet proxy not initialized')) return false;
+    setWalletActionRecovery(actionKey);
+    void retryWalletSetup();
+    return true;
   };
+
+  const walletRecoveryNotice = (actionKey: string, actionLabel: string) => walletActionRecovery === actionKey ? (
+    <div className="action-feedback" role="status">
+      <p>{walletLoading
+          ? 'We lost connection before this action was sent. Reconnecting now. Any earlier completed step is still saved.'
+          : walletError
+            ? 'Your account needs to reconnect before this action can be sent.'
+            : `You’re reconnected. The action wasn’t sent. Tap “${actionLabel}” once to try again.`}</p>
+      {walletError && !walletLoading && <button className="btn" type="button" onClick={() => void retryWalletSetup()}>Reconnect account</button>}
+    </div>
+  ) : null;
 
   // Listen to hash change if user uses browser history / direct links and fetch on-chain state
   useEffect(() => {
@@ -130,9 +221,9 @@ export default function App() {
     window.scrollTo(0, 0);
   };
 
-  const displayName = authenticated
+  const displayName = customDisplayName || (authenticated
     ? user?.google?.name || user?.google?.email?.split('@')[0] || user?.email?.address?.split('@')[0] || 'Ngozi'
-    : 'Ngozi';
+    : 'Ngozi');
 
   const displayEmail = authenticated
     ? user?.google?.email || user?.email?.address || 'ngozi@example.com'
@@ -147,6 +238,151 @@ export default function App() {
     ? onChainCircles.filter((circle) => circle.members.includes(walletId))
     : [];
   const selectedCircle = joinedCircles.find((circle) => circle.id === selectedCircleId) || joinedCircles[0] || null;
+
+  useEffect(() => {
+    if (activeTab !== 'activity' || !walletId) return;
+    let cancelled = false;
+    setActivityLoading(true);
+    setActivityError(false);
+    void fetchOnChainCircles()
+      .then((circles) => { if (!cancelled) setOnChainCircles(circles); })
+      .catch((error) => {
+        console.warn('Could not refresh activity', error);
+        if (!cancelled) setActivityError(true);
+      })
+      .finally(() => { if (!cancelled) setActivityLoading(false); });
+    return () => { cancelled = true; };
+  }, [activeTab, walletId]);
+
+  const activityItems: ActivityItem[] = walletId ? joinedCircles.flatMap((circle) => {
+    if (circle.status !== 'Active') return [];
+    const currentRoundPayments = circle.round_payments[String(circle.current_round)] ?? [];
+    const items: ActivityItem[] = [];
+
+    if (!currentRoundPayments.includes(walletId)) {
+      const due = activityDeadline(circle.round_deadline);
+      items.push({
+        id: `contribution-${circle.id}-${circle.current_round}`,
+        circleId: circle.id,
+        kind: 'contribution',
+        title: `Contribute ${formatAjusd(circle.amount_per_round)} AJUSD`,
+        detail: `${circle.name} · Round ${circle.current_round + 1} of ${circle.slots.length}`,
+        status: due.label,
+        overdue: due.overdue,
+        deadline: circle.round_deadline,
+      });
+    }
+
+    const request = circle.payout_request;
+    const fullyPaid = circle.members.length > 0 && currentRoundPayments.length === circle.members.length;
+    if (request && request.round === circle.current_round && request.requester !== walletId) {
+      const recipient = circle.slots[circle.current_round];
+      items.push({
+        id: `payout-${circle.id}-${request.round}`,
+        circleId: circle.id,
+        kind: 'payout',
+        title: `Confirm payout${recipient ? ` to ${memberLabel(recipient, walletId)}` : ''}`,
+        detail: `${circle.name} · Requested by ${memberLabel(request.requester, walletId)}`,
+        status: 'Needs your confirmation',
+      });
+    } else if (!request && fullyPaid) {
+      const recipient = circle.slots[circle.current_round];
+      items.push({
+        id: `payout-${circle.id}-${circle.current_round}`,
+        circleId: circle.id,
+        kind: 'payout',
+        title: `Release payout${recipient ? ` to ${memberLabel(recipient, walletId)}` : ''}`,
+        detail: `${circle.name} · Fully paid; a different member must confirm after you request release`,
+        status: 'Ready to release',
+      });
+    }
+
+    circle.proposals.forEach((proposal) => {
+      if (proposal.executed || Object.prototype.hasOwnProperty.call(proposal.votes, walletId)) return;
+      items.push({
+        id: `vote-${circle.id}-${proposal.id}`,
+        circleId: circle.id,
+        kind: 'vote',
+        title: proposalDescription(proposal, walletId),
+        detail: `${circle.name} · ${Object.keys(proposal.votes).length} vote${Object.keys(proposal.votes).length === 1 ? '' : 's'} recorded`,
+        status: 'Open vote',
+      });
+    });
+
+    return items;
+  }) : [];
+  activityItems.sort((a, b) => {
+    const priority = { contribution: 0, payout: 1, vote: 2 };
+    return priority[a.kind] - priority[b.kind]
+      || Number(b.overdue) - Number(a.overdue)
+      || (a.deadline ?? Number.MAX_SAFE_INTEGER) - (b.deadline ?? Number.MAX_SAFE_INTEGER);
+  });
+
+  const homeImportantItem = activityItems.find((item) => item.kind === 'payout')
+    || activityItems.find((item) => item.kind === 'contribution' && item.overdue)
+    || activityItems.find((item) => item.kind === 'vote');
+  const homeImportantCircle = homeImportantItem
+    ? joinedCircles.find((circle) => circle.id === homeImportantItem.circleId)
+    : undefined;
+  const homeImportantPot = homeImportantCircle
+    ? formatAjusd((BigInt(homeImportantCircle.amount_per_round) * BigInt(homeImportantCircle.members.length)).toString())
+    : '';
+  const homeImportantRecipient = homeImportantCircle && homeImportantCircle.current_round < homeImportantCircle.slots.length
+    ? homeImportantCircle.slots[homeImportantCircle.current_round]
+    : null;
+  const homeImportantHeadline = homeImportantItem?.kind === 'payout'
+    ? homeImportantItem.status === 'Ready to release'
+      ? `${homeImportantRecipient ? memberLabel(homeImportantRecipient, walletId || '') : 'The scheduled member'} can collect ${homeImportantPot} AJUSD.`
+      : `Payout confirmation needed${homeImportantRecipient ? ` for ${memberLabel(homeImportantRecipient, walletId || '')}` : ''}.`
+    : homeImportantItem?.kind === 'contribution'
+      ? `Your ${homeImportantItem.title.replace('Contribute ', '')} contribution is overdue.`
+      : homeImportantItem?.kind === 'vote'
+        ? `Your vote is needed: ${homeImportantItem.title}.`
+        : '';
+  const homeImportantDetail = homeImportantItem?.kind === 'payout'
+    ? homeImportantItem.status === 'Ready to release'
+      ? `${homeImportantCircle?.name} is fully paid. A member needs to request the release, then another member confirms it.`
+      : `${homeImportantCircle?.name} is fully paid. Another member requested the release; review and confirm it.`
+    : homeImportantItem?.kind === 'contribution'
+      ? `${homeImportantCircle?.name} · ${homeImportantItem.detail.split(' · ').at(-1)}`
+      : homeImportantItem?.kind === 'vote'
+        ? homeImportantItem.detail
+        : '';
+
+  const recentActivityItems: RecentActivityItem[] = walletId ? joinedCircles.flatMap((circle) => {
+    const items: RecentActivityItem[] = [];
+    const currentRoundPayments = circle.round_payments[String(circle.current_round)] ?? [];
+    currentRoundPayments.forEach((member) => items.push({
+      id: `recent-payment-${circle.id}-${circle.current_round}-${member}`,
+      circleId: circle.id,
+      round: circle.current_round,
+      title: `${memberLabel(member, walletId)} paid ${formatAjusd(circle.amount_per_round)} AJUSD`,
+      detail: `${circle.name} · Round ${circle.current_round + 1}`,
+    }));
+    const lastCollector = circle.collected_members.at(-1);
+    if (lastCollector) {
+      const collectedRound = circle.collected_members.length - 1;
+      const payoutPayments = circle.round_payments[String(collectedRound)] ?? [];
+      const payoutAmount = payoutPayments.length
+        ? formatAjusd((BigInt(circle.amount_per_round) * BigInt(payoutPayments.length)).toString())
+        : null;
+      items.push({
+        id: `recent-payout-${circle.id}-${collectedRound}`,
+        circleId: circle.id,
+        round: collectedRound,
+        title: `${memberLabel(lastCollector, walletId)} collected${payoutAmount ? ` ${payoutAmount} AJUSD` : ' the pot'}`,
+        detail: `${circle.name} · Round ${collectedRound + 1}`,
+      });
+    }
+    return items;
+  }) : [];
+  recentActivityItems.sort((a, b) => b.round - a.round);
+
+  const openActivityCircle = (circleId: number) => {
+    setSelectedCircleId(circleId);
+    setCircleRefreshKey((key) => key + 1);
+    navigateTo('circle');
+  };
 
   useEffect(() => {
     if (!selectedCircle || !walletId) {
@@ -193,12 +429,25 @@ export default function App() {
     const link = inviteUrl(circleId);
     setInviteCopyNotice(null);
     try {
-      await navigator.clipboard.writeText(link);
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(link);
+      } else {
+        const temporaryInput = document.createElement('textarea');
+        temporaryInput.value = link;
+        temporaryInput.setAttribute('readonly', '');
+        temporaryInput.style.position = 'fixed';
+        temporaryInput.style.opacity = '0';
+        document.body.appendChild(temporaryInput);
+        temporaryInput.select();
+        const copied = document.execCommand('copy');
+        temporaryInput.remove();
+        if (!copied) throw new Error('Clipboard copy failed');
+      }
       setCopiedInviteId(circleId);
-      setInviteCopyNotice('Invite link copied.');
+      setInviteCopyNotice(null);
       window.setTimeout(() => setCopiedInviteId((current) => current === circleId ? null : current), 2500);
     } catch {
-      setInviteCopyNotice('Copy isn’t available here. Select and copy the link below.');
+      setInviteCopyNotice('Could not copy the link. Please try again.');
     }
   };
 
@@ -231,10 +480,11 @@ export default function App() {
   };
 
   const handlePayoutAction = async () => {
+    setWalletActionRecovery(null);
     setPayoutNotice(null);
     setPayoutError(null);
     if (!nearAccount || !walletId || !selectedCircle || !roundStatus) {
-      setPayoutError(walletError || 'Your wallet or circle details are still loading. Try again shortly.');
+      setPayoutError(walletError || 'Your account or circle details are still loading. Try again shortly.');
       return;
     }
     if (!roundStatus.is_round_fully_paid || !roundStatus.scheduled_recipient) {
@@ -288,17 +538,18 @@ export default function App() {
       const fallback = isConfirmation
         ? 'Could not confirm the payout. Refresh the circle and try again.'
         : 'Could not request the payout. Refresh the circle and try again.';
-      setPayoutError(recoverWalletAfterSigningError(error, fallback));
+      if (!recoverWalletAfterSigningError(error, 'payout')) setPayoutError(friendlyTransactionError(error, fallback));
     } finally {
       setPayoutBusy(null);
     }
   };
 
   const handleVote = async (proposal: CircleProposal, approve: boolean) => {
+    setWalletActionRecovery(null);
     setVoteNotice(null);
     setVoteError(null);
     if (!nearAccount || !walletId || !selectedCircle) {
-      setVoteError(walletError || 'Your sign-in wallet is still getting ready. Try again shortly.');
+      setVoteError(walletError || 'Your account is still getting ready. Try again shortly.');
       return;
     }
     if (Object.prototype.hasOwnProperty.call(proposal.votes, walletId)) {
@@ -318,7 +569,7 @@ export default function App() {
       setVoteNotice(passed ? 'Your vote passed the proposal.' : 'Your vote has been recorded.');
       setOnChainCircles(await fetchOnChainCircles());
     } catch (error) {
-      setVoteError(recoverWalletAfterSigningError(error, 'Could not record your vote. Refresh and try again.'));
+      if (!recoverWalletAfterSigningError(error, `vote-${proposal.id}-${approve ? 'approve' : 'reject'}`)) setVoteError(friendlyTransactionError(error, 'Could not record your vote. Refresh and try again.'));
       await fetchOnChainCircles().then(setOnChainCircles).catch(() => undefined);
     } finally {
       setVoteBusyId(null);
@@ -326,6 +577,7 @@ export default function App() {
   };
 
   const handleGetTestTokens = async () => {
+    setWalletActionRecovery(null);
     setContributionNotice(null);
     setContributionError(null);
     if (!nearAccount || !walletId || !roundStatus) {
@@ -376,13 +628,14 @@ export default function App() {
       setContributionNotice(`${formatAjusd(amountNeeded.toString())} AJUSD test tokens added to your balance.`);
       refreshSelectedCircle();
     } catch (error) {
-      setContributionError(recoverWalletAfterSigningError(error, 'Could not add test tokens. Check your testnet balance and try again.'));
+      if (!recoverWalletAfterSigningError(error, 'tokens')) setContributionError(friendlyTransactionError(error, 'Could not add test tokens. Check your testnet balance and try again.'));
     } finally {
       setContributionBusy(null);
     }
   };
 
   const handlePayContribution = async () => {
+    setWalletActionRecovery(null);
     setContributionNotice(null);
     setContributionError(null);
     if (!nearAccount || !walletId || !selectedCircle || !roundStatus) {
@@ -432,7 +685,7 @@ export default function App() {
       refreshSelectedCircle();
       setTokenBalance((BigInt(tokenBalance || '0') - due).toString());
     } catch (error) {
-      setContributionError(recoverWalletAfterSigningError(error, 'Payment did not go through. Your balance was not marked as paid.'));
+      if (!recoverWalletAfterSigningError(error, 'payment')) setContributionError(friendlyTransactionError(error, 'Payment did not go through. Your balance was not marked as paid.'));
     } finally {
       setContributionBusy(null);
     }
@@ -440,6 +693,7 @@ export default function App() {
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setWalletActionRecovery(null);
     setCreateError(null);
     setCreatedNotice(null);
     setCreatedCircleId(null);
@@ -515,8 +769,8 @@ export default function App() {
         throw new Error('The transaction returned without a circle ID. Refresh your circles before trying again to avoid creating a duplicate.');
       }
     } catch (error) {
-      const message = recoverWalletAfterSigningError(error, 'Circle creation failed.');
-      setCreateError(message);
+      const recoveringWallet = recoverWalletAfterSigningError(error, 'create');
+      if (!recoveringWallet) setCreateError(friendlyTransactionError(error, 'Circle creation failed.'));
       setCreatedNotice(null);
       setCreateStage('idle');
       setCreatingCircle(false);
@@ -550,6 +804,7 @@ export default function App() {
   };
 
   const handleRetryOrganizerJoin = async () => {
+    setWalletActionRecovery(null);
     if (!nearAccount || createdCircleId === null) return;
     setCreateError(null);
     setRetryingOrganizerJoin(true);
@@ -570,13 +825,14 @@ export default function App() {
       setSelectedCircleId(createdCircleId);
       navigateTo('circle');
     } catch (error) {
-      setCreateError(recoverWalletAfterSigningError(error, 'Could not claim slot 1.'));
+      if (!recoverWalletAfterSigningError(error, 'organizer-join')) setCreateError(friendlyTransactionError(error, 'Could not claim slot 1.'));
     } finally {
       setRetryingOrganizerJoin(false);
     }
   };
 
   const handleJoinCircle = async (circle: OnChainCircle) => {
+    setWalletActionRecovery(null);
     setJoinNotice(null);
     setJoinError(null);
     if (!nearAccount || !walletId) {
@@ -605,7 +861,7 @@ export default function App() {
       setSelectedCircleId(circle.id);
       navigateTo('circle');
     } catch (error) {
-      setJoinError(recoverWalletAfterSigningError(error, 'Could not join this circle. Refresh and try again.'));
+      if (!recoverWalletAfterSigningError(error, `join-${circle.id}`)) setJoinError(friendlyTransactionError(error, 'Could not join this circle. Refresh and try again.'));
       setOnChainCircles(await fetchOnChainCircles());
     } finally {
       setJoiningCircleId(null);
@@ -691,7 +947,7 @@ export default function App() {
         >
           <svg className="i"><use href="#bell" /></svg>
           Activity
-          <span className="badge">3</span>
+          {activityItems.length > 0 && <span className="badge" aria-label={`${activityItems.length} pending actions`}>{activityItems.length}</span>}
         </button>
         <button
           onClick={() => navigateTo('profile')}
@@ -731,10 +987,10 @@ export default function App() {
             </button>
           )}
         </div>
-        {authenticated && walletLoading && (
+        {authenticated && walletLoading && !walletActionRecovery && (
           <p className="muted small wallet-status" role="status">Preparing your sign-in wallet for NEAR actions…</p>
         )}
-        {authenticated && walletError && (
+        {authenticated && walletError && !walletActionRecovery && (
           <div className="notice wallet-status" role="alert">
             <p>{walletError}</p>
             <button className="btn" type="button" disabled={walletLoading} onClick={() => void retryWalletSetup()}>
@@ -752,7 +1008,7 @@ export default function App() {
             <div className="hero">
               <p className="muted small">{roundStatus.paid_members.includes(walletId) ? 'Contribution received' : 'Contribution this round'}</p>
               <p className="big money">{formatAjusd(roundStatus.amount_per_member)} AJUSD</p>
-              <p className="muted">{selectedCircle.name} ? Round {roundStatus.current_round + 1} of {roundStatus.total_rounds}</p>
+              <p className="muted">{selectedCircle.name} · Round {roundStatus.current_round + 1} of {roundStatus.total_rounds}</p>
               <button className="btn primary" type="button" onClick={() => navigateTo('circle')}>View circle</button>
             </div>
           ) : (
@@ -761,6 +1017,16 @@ export default function App() {
               <p className="big">Start with your people</p>
               <p className="muted">Create a circle or open an invitation link to join one.</p>
               <button className="btn primary" type="button" onClick={() => navigateTo('create')}>Create a circle</button>
+            </div>
+          )}
+          {homeImportantItem && homeImportantCircle && (
+            <div className="home-important" role="status">
+              <svg className="i" aria-hidden="true"><use href="#info" /></svg>
+              <div className="home-important-copy">
+                <p><strong>{homeImportantHeadline}</strong></p>
+                <p>{homeImportantDetail}</p>
+              </div>
+              <button className="btn" type="button" onClick={() => openActivityCircle(homeImportantCircle.id)}>Review</button>
             </div>
           )}
           {hasJoinInvite && (
@@ -790,11 +1056,14 @@ export default function App() {
                           ? 'Joining…'
                           : walletId && invitedCircle.members.includes(walletId)
                             ? 'You’ve already joined'
-                            : 'Join this circle'}
+                            : walletActionRecovery === `join-${invitedCircle.id}` && !walletLoading && !walletError
+                              ? 'Try joining again'
+                              : 'Join this circle'}
                       </button>
                     ) : (
                       <p className="muted small">This circle is no longer open to new members.</p>
                     )}
+                    {walletRecoveryNotice(`join-${invitedCircle.id}`, 'Try joining again')}
                   </>
                 ) : (
                   <p className="muted">Looking up this circle… If it doesn’t appear, the link may be invalid or the circle may have been removed.</p>
@@ -816,7 +1085,7 @@ export default function App() {
                   <span className="grow">
                     <b>{circle.name}</b>
                     <br />
-                    <span className="muted small">{formatAjusd(circle.amount_per_round)} AJUSD ? {circle.members.length}/{circle.max_members} members</span>
+                    <span className="muted small">{formatAjusd(circle.amount_per_round)} AJUSD per round · {circle.members.length}/{circle.max_members} members</span>
                   </span>
                   <span className={`chip ${circle.status === 'Open' ? 'wait' : ''}`}>{circle.status}</span>
                 </button>
@@ -825,30 +1094,49 @@ export default function App() {
               )}
             </div>
           </div>
-          <p className="muted small">Payments and member activity are shown from each circle?s latest update.</p>
+          <div className="home-recent">
+            <div className="home-recent-heading">
+              <h2>Recent activity</h2>
+              {recentActivityItems.length > 0 && <button className="text-link" type="button" onClick={() => navigateTo('activity')}>See all</button>}
+            </div>
+            {recentActivityItems.length > 0 ? (
+              <div className="list">
+                {recentActivityItems.slice(0, 5).map((item) => (
+                  <button className="row circle-list-button" type="button" key={item.id} onClick={() => openActivityCircle(item.circleId)}>
+                    <span className="grow">
+                      <b>{item.title}</b>
+                      <br />
+                      <span className="muted small">{item.detail}</span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="panel home-recent-empty">
+                <p className="muted small">Recent contribution and payout updates will appear here.</p>
+              </div>
+            )}
+          </div>
         </section>
 
         {/* CIRCLE SECTION */}
         <section id="circle" className={activeTab === 'circle' ? 'on' : ''}>
           {selectedCircle ? (
             <>
-              <div className="head">
-                <p className="muted small">Your circle</p>
-                <h1>{selectedCircle.name}</h1>
-                <p className="muted">{formatAjusd(selectedCircle.amount_per_round)} AJUSD per person ? {selectedCircle.members.length} of {selectedCircle.max_members} members</p>
-              </div>
-
-              <div className="panel invite-panel">
-                <p className="muted small">Share with your group</p>
-                <h2>Invite members</h2>
-                <div className="invite-link-row">
-                  <input aria-label="Circle invite link" readOnly value={inviteUrl(selectedCircle.id)} onFocus={(event) => event.currentTarget.select()} />
-                  <button className="btn primary" type="button" onClick={() => void handleCopyInvite(selectedCircle.id)}>
-                    {copiedInviteId === selectedCircle.id ? 'Copied' : 'Copy link'}
-                  </button>
+              <div className="circle-page-head">
+                <div className="head">
+                  <p className="muted small">Your circle</p>
+                  <h1>{selectedCircle.name}</h1>
+                  <p className="muted">{formatAjusd(selectedCircle.amount_per_round)} AJUSD per person · {selectedCircle.members.length} of {selectedCircle.max_members} members</p>
                 </div>
-                {inviteCopyNotice && <p className="muted small" role="status">{inviteCopyNotice}</p>}
-                <p className="hint">Anyone with the link can join while places are open.</p>
+                {selectedCircle.status === 'Open' && (
+                  <div className="circle-invite-action">
+                    <button className="btn" type="button" aria-live="polite" onClick={() => void handleCopyInvite(selectedCircle.id)}>
+                      {copiedInviteId === selectedCircle.id ? 'Link copied' : 'Copy invite link'}
+                    </button>
+                    {inviteCopyNotice && <span className="muted small" role="status">{inviteCopyNotice}</span>}
+                  </div>
+                )}
               </div>
 
               <div className="panel circle-round-panel">
@@ -877,14 +1165,15 @@ export default function App() {
                         const y = Math.sin(angle) * 82;
                         const current = roundStatus.current_round === index;
                         const collected = Boolean(member && selectedCircle.collected_members.includes(member));
+                        const collectionStatus = current ? 'collects this round' : collected ? 'has collected' : 'has not collected yet';
                         return (
                           <span
                             className={`rotation-node ${current ? 'is-current' : collected ? 'is-collected' : ''}`}
                             key={`rotation-${selectedCircle.id}-${index}`}
                             style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)` }}
-                            title={`${member ? memberLabel(member, walletId) : 'Open place'}, slot ${index + 1}`}
+                            title={`${member ? memberLabel(member, walletId) : 'Open place'} ${collectionStatus}, slot ${index + 1}`}
                           >
-                            {memberInitials(member, walletId, index)}
+                            {memberInitials(member, walletId, index, displayName)}
                           </span>
                         );
                       })}
@@ -901,6 +1190,11 @@ export default function App() {
                         </p>
                       )}
                     </div>
+                    <div className="rotation-legend" aria-label="Collection progress legend">
+                      <span><i className="rotation-legend-mark collected" />Collected</span>
+                      <span><i className="rotation-legend-mark current" />Collects this round</span>
+                      <span><i className="rotation-legend-mark waiting" />Yet to collect</span>
+                    </div>
                   </div>
                 ) : selectedCircle.status === 'Open' ? (
                   <p className="muted">Contributions open once every place is filled.</p>
@@ -911,66 +1205,87 @@ export default function App() {
                 )}
               </div>
 
-              {selectedCircle.status === 'Active' && roundStatus && (
-                <div className="panel contribution-panel">
-                  <div className="contribution-topline">
-                    <div>
-                      <p className="muted small">Your contribution</p>
-                      <p className="contribution-amount">{formatAjusd(roundStatus.amount_per_member)} AJUSD</p>
-                    </div>
-                    {tokenBalance !== null && <span className="chip">Balance {formatAjusd(tokenBalance)} AJUSD</span>}
-                  </div>
-                  {roundStatus.paid_members.includes(walletId) ? (
-                    <p className="contribution-done" role="status">You?ve contributed for this round.</p>
-                  ) : BigInt(tokenBalance || '0') < BigInt(roundStatus.amount_per_member) ? (
-                    <>
-                      <p className="muted small">These are test tokens with no cash value.</p>
-                      <p className="muted small">First use may require a small one-time testnet NEAR deposit to set up your AJUSD balance.</p>
-                      <button className="btn primary" type="button" disabled={contributionBusy !== null || circleDataLoading || !roundStatus || walletActionDisabled} onClick={() => void handleGetTestTokens()}>
-                        {contributionBusy === 'tokens' ? 'Getting test AJUSD?' : `Get ${formatAjusd(roundStatus.amount_per_member)} test AJUSD`}
-                      </button>
-                    </>
-                  ) : (
-                    <button className="btn primary" type="button" disabled={contributionBusy !== null || circleDataLoading || walletActionDisabled} onClick={() => void handlePayContribution()}>
-                      {contributionBusy === 'payment' ? 'Recording your contribution?' : `Contribute ${formatAjusd(roundStatus.amount_per_member)} AJUSD`}
-                    </button>
-                  )}
-                  {contributionNotice && <p className="contribution-feedback" role="status">{contributionNotice}</p>}
-                  {contributionError && <p className="contribution-feedback error" role="alert">{contributionError}</p>}
-                </div>
-              )}
-
               <div>
-                <h2>Members</h2>
-                <div className="list">
-                  {selectedCircle.slots.map((member, index) => {
-                    const paid = Boolean(member && roundStatus?.paid_members.includes(member));
-                    const collecting = roundStatus?.current_round === index && selectedCircle.status === 'Active';
-                    const collected = Boolean(member && selectedCircle.collected_members.includes(member));
-                    const memberStatus = !member
-                      ? 'Open place'
-                      : collected
-                        ? 'Collected'
-                        : collecting
-                          ? 'Collects now'
-                          : paid
-                            ? 'Paid, waiting'
-                            : 'Awaiting payment';
-                    return (
-                      <div className="row" key={`${selectedCircle.id}-${index}`}>
-                        <span className="av">{memberInitials(member, walletId, index)}</span>
-                        <span className="grow">
-                          <b>{member ? (member === walletId ? 'You' : memberLabel(member, walletId)) : 'Open place'}</b>
-                          <br />
-                          <span className="muted small">Slot {index + 1}</span>
-                        </span>
-                        {member && roundStatus && selectedCircle.status === 'Active' && (
-                          <span className={`chip ${collecting ? 'late' : paid || collected ? '' : 'wait'}`}>{memberStatus}</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                <h2 className="members-heading">Members</h2>
+                {selectedCircle.status === 'Open' ? (
+                  <div className="panel payment-history-empty">
+                    <p className="muted">Round payment statuses will appear when the circle is full and starts.</p>
+                  </div>
+                ) : (
+                  <div className="list member-list">
+                    {selectedCircle.slots.map((member, slotIndex) => {
+                      const memberIsYou = member === walletId;
+                      const currentRoundPaid = Boolean(member && roundStatus?.paid_members.includes(member));
+                      const expanded = expandedPaymentMember === slotIndex;
+                      const currentRound = roundStatus?.current_round ?? selectedCircle.current_round;
+                      const currentStatus = !member
+                        ? 'Open place'
+                        : selectedCircle.status === 'Active'
+                          ? !roundStatus ? 'Loading status' : currentRoundPaid ? 'Paid this round' : 'Not paid this round'
+                          : selectedCircle.status === 'Ended' ? 'Circle ended' : 'Waiting to start';
+                      return (
+                        <div className="member-list-entry" key={`${selectedCircle.id}-${slotIndex}`}>
+                          <div className="row member-row">
+                            <span className="av">{memberInitials(member, walletId, slotIndex, displayName)}</span>
+                            <span className="grow member-row-copy">
+                              <b>{member ? (memberIsYou ? `${displayName} (you)` : memberLabel(member, walletId)) : 'Open place'}</b>
+                              <span className="muted small">{memberIsYou && selectedCircle.status === 'Active' && currentRoundPaid
+                                ? 'Your contribution for this round is already recorded.'
+                                : `Slot ${slotIndex + 1}`}</span>
+                            </span>
+                            {member && selectedCircle.status === 'Active' && memberIsYou && !currentRoundPaid && roundStatus ? (
+                              <button
+                                className="btn primary member-contribute-button"
+                                type="button"
+                                disabled={tokenBalance === null || contributionBusy !== null || circleDataLoading || walletActionDisabled}
+                                onClick={() => void (BigInt(tokenBalance || '0') < BigInt(roundStatus.amount_per_member) ? handleGetTestTokens() : handlePayContribution())}
+                              >
+                                {tokenBalance === null ? 'Checking balance…'
+                                  : contributionBusy === 'tokens' ? 'Getting test AJUSD…'
+                                    : contributionBusy === 'payment' ? 'Recording contribution…'
+                                      : walletActionRecovery === 'tokens' || walletActionRecovery === 'payment' ? 'Try again'
+                                        : BigInt(tokenBalance) < BigInt(roundStatus.amount_per_member) ? 'Get test AJUSD' : `Contribute ${formatAjusd(roundStatus.amount_per_member)} AJUSD`}
+                              </button>
+                            ) : (
+                              <span className={`chip member-round-status ${currentRoundPaid ? 'paid' : currentStatus === 'Not paid this round' ? 'wait' : ''}`}>
+                                {currentStatus}
+                              </span>
+                            )}
+                            {member && (
+                              <button
+                                className="member-history-toggle"
+                                type="button"
+                                aria-expanded={expanded}
+                                onClick={() => setExpandedPaymentMember(expanded ? null : slotIndex)}
+                              >
+                                {expanded ? 'Hide rounds' : 'Rounds'}
+                              </button>
+                            )}
+                          </div>
+                          {expanded && member && (
+                            <div className="member-round-history" aria-label={`Payment history for ${memberLabel(member, walletId)}`}>
+                              {Array.from({ length: selectedCircle.max_members }, (_, roundIndex) => {
+                                const paymentMembers = selectedCircle.round_payments?.[String(roundIndex)] || [];
+                                const paid = paymentMembers.includes(member);
+                                const upcoming = selectedCircle.status === 'Active' && roundIndex > currentRound;
+                                const roundLabel = upcoming ? 'Upcoming' : paid ? 'Paid' : 'Not paid';
+                                return (
+                                  <span className={`member-round-pill ${paid ? 'paid' : upcoming ? 'upcoming' : 'unpaid'}`} key={`member-round-${slotIndex}-${roundIndex}`}>
+                                    Round {roundIndex + 1}: {roundLabel}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+                {walletRecoveryNotice('tokens', 'Get test AJUSD')}
+                {walletRecoveryNotice('payment', 'Contribute')}
+                {contributionNotice && <p className="contribution-feedback" role="status">{contributionNotice}</p>}
+                {contributionError && <p className="contribution-feedback error" role="alert">{contributionError}</p>}
               </div>
 
               <div className="circle-subsection">
@@ -992,13 +1307,15 @@ export default function App() {
                           ) : (
                             <div className="vote-actions">
                               <button className="btn" type="button" disabled={walletActionDisabled || voteBusyId !== null} onClick={() => void handleVote(proposal, false)}>
-                                Reject
+                                {walletActionRecovery === `vote-${proposal.id}-reject` && !walletLoading && !walletError ? 'Try rejecting again' : 'Reject'}
                               </button>
                               <button className="btn primary" type="button" disabled={walletActionDisabled || voteBusyId !== null} onClick={() => void handleVote(proposal, true)}>
-                                {voteBusyId === proposal.id ? 'Recording…' : 'Approve'}
+                                {voteBusyId === proposal.id ? 'Recording…' : walletActionRecovery === `vote-${proposal.id}-approve` && !walletLoading && !walletError ? 'Try approving again' : 'Approve'}
                               </button>
                             </div>
                           )}
+                          {walletRecoveryNotice(`vote-${proposal.id}-reject`, 'Try rejecting again')}
+                          {walletRecoveryNotice(`vote-${proposal.id}-approve`, 'Try approving again')}
                         </article>
                       );
                     })
@@ -1010,7 +1327,7 @@ export default function App() {
                 </div>
               </div>
 
-              {selectedCircle.status === 'Active' && roundStatus && (roundStatus.is_round_fully_paid || payoutNotice || payoutError) && (
+              {selectedCircle.status === 'Active' && roundStatus && (roundStatus.is_round_fully_paid || payoutNotice || payoutError || walletActionRecovery === 'payout') && (
                 <div className="payout-action-panel">
                   {roundStatus.is_round_fully_paid && roundStatus.scheduled_recipient && (
                     <>
@@ -1021,14 +1338,14 @@ export default function App() {
                           <p className="muted small">Your request is recorded. Another member must confirm the payout.</p>
                         ) : (
                           <button className="btn primary payout-button" type="button" disabled={payoutBusy !== null || walletActionDisabled} onClick={() => void handlePayoutAction()}>
-                            {payoutBusy === 'confirm' ? 'Confirming payout…' : `Confirm payout to ${memberLabel(roundStatus.scheduled_recipient, walletId)}`}
+                            {payoutBusy === 'confirm' ? 'Confirming payout…' : walletActionRecovery === 'payout' && !walletLoading && !walletError ? 'Try confirming payout again' : `Confirm payout to ${memberLabel(roundStatus.scheduled_recipient, walletId)}`}
                           </button>
                         )
                       ) : roundStatus.payout_ready ? (
                         <>
                           <p className="muted small">A different member must confirm before AJUSD transfers.</p>
                           <button className="btn primary payout-button" type="button" disabled={payoutBusy !== null || walletActionDisabled} onClick={() => void handlePayoutAction()}>
-                            {payoutBusy === 'request' ? 'Requesting payout…' : `Release payout to ${memberLabel(roundStatus.scheduled_recipient, walletId)}`}
+                            {payoutBusy === 'request' ? 'Requesting payout…' : walletActionRecovery === 'payout' && !walletLoading && !walletError ? 'Try releasing payout again' : `Release payout to ${memberLabel(roundStatus.scheduled_recipient, walletId)}`}
                           </button>
                         </>
                       ) : (
@@ -1038,6 +1355,7 @@ export default function App() {
                   )}
                   {payoutNotice && <p className="action-feedback" role="status">{payoutNotice}</p>}
                   {payoutError && <p className="action-feedback error" role="alert">{payoutError}</p>}
+                  {walletRecoveryNotice('payout', roundStatus.payout_request ? 'Try confirming payout again' : 'Try releasing payout again')}
                 </div>
               )}
             </>
@@ -1067,20 +1385,20 @@ export default function App() {
               <p className="muted small">Circle #{createdCircleId} is ready for members</p>
               <h2>Invite your people</h2>
               <p className="muted small">Share this link with the members you want in the circle.</p>
-              <input aria-label="Circle invite link" readOnly value={inviteUrl(createdCircleId)} onFocus={(event) => event.currentTarget.select()} />
-              <button className="btn primary" type="button" onClick={() => void handleCopyInvite(createdCircleId)}>
+              <button className="btn primary" type="button" aria-live="polite" onClick={() => void handleCopyInvite(createdCircleId)}>
                 {copiedInviteId === createdCircleId ? 'Link copied' : 'Copy invite link'}
               </button>
               {inviteCopyNotice && <p className="muted small" role="status">{inviteCopyNotice}</p>}
               {createStage === 'joining' && !creatingCircle && (
                   <button className="btn" type="button" disabled={retryingOrganizerJoin || walletActionDisabled} onClick={() => void handleRetryOrganizerJoin()}>
-                  {retryingOrganizerJoin ? 'Claiming slot 1…' : 'Retry claiming slot 1'}
+                  {retryingOrganizerJoin ? 'Claiming slot 1…' : walletActionRecovery === 'organizer-join' && !walletLoading && !walletError ? 'Try claiming slot 1 again' : 'Retry claiming slot 1'}
                 </button>
               )}
+              {walletRecoveryNotice('organizer-join', 'Try claiming slot 1 again')}
             </div>
           )}
           {createError && <div className="notice" role="alert"><p>{createError}</p></div>}
-          {authenticated && walletLoading && <p className="muted small">Preparing your NEAR testnet account…</p>}
+          {authenticated && walletLoading && !walletActionRecovery && <p className="muted small">Preparing your account so you can use circle actions…</p>}
           <form onSubmit={handleCreateSubmit}>
             <div className="field">
               <label htmlFor="n">Circle name</label>
@@ -1154,8 +1472,9 @@ export default function App() {
               {creatingCircle
                 ? createStage === 'joining' ? 'Claiming slot 1…' : 'Creating circle…'
                 : !authenticated ? 'Sign in with Google to continue'
-                  : 'Create circle and join slot 1'}
+                  : walletActionRecovery === 'create' && !walletLoading && !walletError ? 'Try creating the circle again' : 'Create circle and join slot 1'}
             </button>
+            {walletRecoveryNotice('create', 'Try creating the circle again')}
           </form>
         </section>
 
@@ -1163,41 +1482,121 @@ export default function App() {
         <section id="activity" className={activeTab === 'activity' ? 'on' : ''}>
           <div className="head">
             <h1>Activity</h1>
-            <p className="muted">Things that need you.</p>
+            <p className="muted">A clear list of what needs your attention across your circles.</p>
           </div>
-          <div className="list">
-            <div className="row" onClick={() => navigateTo('circle')} role="button" tabIndex={0}>
-              <span className="grow">
-                <b>Pay ₦20,000</b>
-                <br />
-                <span className="muted small">Sunday Savers, due Friday</span>
-              </span>
-              <span className="chip late">Due soon</span>
+          {authenticated && walletId && (
+            <div className="activity-refresh-row">
+              <span className="muted small">Your pending actions, from your circles</span>
+              <button
+                className="btn"
+                type="button"
+                disabled={activityLoading}
+                onClick={() => {
+                  setActivityLoading(true);
+                  setActivityError(false);
+                  void fetchOnChainCircles()
+                    .then(setOnChainCircles)
+                    .catch((error) => {
+                      console.warn('Could not refresh activity', error);
+                      setActivityError(true);
+                    })
+                    .finally(() => setActivityLoading(false));
+                }}
+              >
+                {activityLoading ? 'Refreshing…' : 'Refresh'}
+              </button>
             </div>
-            <div className="row" onClick={() => navigateTo('circle')} role="button" tabIndex={0}>
-              <span className="grow">
-                <b>Confirm payout to Tunde</b>
-                <br />
-                <span className="muted small">Sunday Savers, released by Amaka</span>
-              </span>
-              <span className="chip">Ready</span>
+          )}
+          {activityError && <p className="action-feedback error" role="alert">Could not refresh your activity. Check your connection and try again.</p>}
+          {activityLoading && activityItems.length === 0 ? (
+            <div className="panel activity-empty" role="status">Checking your circles for updates…</div>
+          ) : !authenticated ? (
+            <div className="panel activity-empty">
+              <h2>Sign in to see your activity</h2>
+              <p className="muted">Your contributions, payout confirmations, and votes will appear here.</p>
+              <button className="btn primary" type="button" onClick={() => void login()}>Sign in with Google</button>
             </div>
-            <div className="row" onClick={() => navigateTo('circle')} role="button" tabIndex={0}>
-              <span className="grow">
-                <b>Vote: remove Emeka?</b>
-                <br />
-                <span className="muted small">Market Women Monthly, 2 days late</span>
-              </span>
-              <span className="chip bad">Open vote</span>
+          ) : !walletId ? (
+            <div className="panel activity-empty" role="status">
+              <h2>Your circles are getting ready</h2>
+              <p className="muted">Activity will appear here once your account is ready.</p>
             </div>
-          </div>
+          ) : activityItems.length ? (
+            <div className="activity-inbox">
+              <div className="activity-inbox-heading">
+                <div>
+                  <h2>Needs your attention</h2>
+                  <p className="muted small">{activityItems.length} pending action{activityItems.length === 1 ? '' : 's'}</p>
+                </div>
+              </div>
+              <div className="activity-list">
+                {activityItems.map((item) => (
+                  <article className="activity-item" key={item.id}>
+                    <div className="activity-item-copy">
+                      <p className="activity-type">{item.kind === 'contribution' ? 'Contribution' : item.kind === 'payout' ? 'Payout' : 'Circle vote'}</p>
+                      <h3>{item.title}</h3>
+                      <p className="muted small">{item.detail}</p>
+                    </div>
+                    <div className="activity-item-action">
+                      <span className={`chip ${item.overdue ? 'bad' : item.kind === 'contribution' ? 'late' : ''}`}>{item.status}</span>
+                      <button className="btn" type="button" onClick={() => openActivityCircle(item.circleId)}>Open circle</button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </div>
+          ) : joinedCircles.length === 0 ? (
+            <div className="panel activity-empty">
+              <h2>No circles to show yet</h2>
+              <p className="muted">Join a circle to see contributions, payout confirmations, and votes that need you.</p>
+              <button className="btn primary" type="button" onClick={() => navigateTo('circle')}>View circles</button>
+            </div>
+          ) : (
+            <div className="panel activity-empty">
+              <span className="activity-check" aria-hidden="true"><svg className="i"><use href="#check" /></svg></span>
+              <h2>You’re all caught up</h2>
+              <p className="muted">No contributions, payout confirmations, or votes need you right now.</p>
+              {activityLoading && <p className="muted small" role="status">Refreshing your circle activity…</p>}
+            </div>
+          )}
         </section>
 
         {/* PROFILE SECTION */}
         <section id="profile" className={activeTab === 'profile' ? 'on' : ''}>
           <div className="head">
-            <h1>{displayName} Adeyemi</h1>
+            <h1>{displayName}</h1>
             <p className="muted">Member since October 2026</p>
+          </div>
+          <div className="panel profile-name-panel">
+            <div>
+              <h2>Display name</h2>
+              <p className="muted small">Choose the name you want people in your circle to see.</p>
+            </div>
+            <label className="profile-name-label" htmlFor="profile-display-name">Your name</label>
+            <input
+              id="profile-display-name"
+              className="profile-name-input"
+              type="text"
+              autoComplete="name"
+              maxLength={32}
+              value={displayNameDraft}
+              onChange={(event) => {
+                setDisplayNameDraft(event.target.value);
+                setDisplayNameSaved(false);
+              }}
+              placeholder="e.g. Ngozi"
+            />
+            <div className="profile-name-actions">
+              <span className="muted small" role="status" aria-live="polite">{displayNameSaved ? 'Saved' : ''}</span>
+              <button
+                className="btn primary"
+                type="button"
+                disabled={!authenticated || displayNameDraft.trim().length < 2 || displayNameDraft.trim().length > 32}
+                onClick={saveDisplayName}
+              >
+                Save name
+              </button>
+            </div>
           </div>
           <div className="list">
             <dl>
@@ -1234,7 +1633,7 @@ export default function App() {
               <span className="grow">
                 <b>Display name</b>
                 <br />
-                <span className="muted small">{displayName} Adeyemi</span>
+                <span className="muted small">{displayName}</span>
               </span>
             </div>
             <div className="row">
@@ -1356,6 +1755,7 @@ export default function App() {
         >
           <svg className="i"><use href="#bell" /></svg>
           Activity
+          {activityItems.length > 0 && <span className="badge mobile-activity-badge" aria-label={`${activityItems.length} pending actions`}>{activityItems.length}</span>}
         </button>
         <button
           onClick={() => navigateTo('profile')}

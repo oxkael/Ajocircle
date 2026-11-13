@@ -58,6 +58,6 @@ export class privySigner extends Signer {
       }
     }
 
-    throw new Error('Could not sign with your NEAR wallet.');
+    throw new Error('We could not approve this action. Please try again.');
   }
 }

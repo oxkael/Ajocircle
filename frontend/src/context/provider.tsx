@@ -90,7 +90,7 @@ export function NEARxPrivy({ children }: PropsWithChildren) {
           setProvisionedWallet({ userId: refreshedUser.id, address });
         } catch (error) {
           console.error('Could not create NEAR wallet', error);
-          setWalletError('We could not prepare your sign-in wallet. Try again.');
+          setWalletError('We could not prepare your account. Try again.');
           setWalletLoading(false);
         } finally {
           creatingWallet.current = false;
