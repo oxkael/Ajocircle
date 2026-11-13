@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useLogin, useLogout, usePrivy } from '@privy-io/react-auth';
-import { fetchOnChainCircles, fetchRoundStatus, CONTRACT_ID, type OnChainCircle, type RoundStatus } from './lib/near';
+import { fetchOnChainCircles, fetchRoundStatus, CONTRACT_ID, type CircleProposal, type OnChainCircle, type RoundStatus } from './lib/near';
 import { TEST_TOKEN_ID } from './lib/near';
 import { useNEAR } from './context/useNear';
 import './App.css';
@@ -9,6 +9,27 @@ type SectionId = 'home' | 'circle' | 'create' | 'activity' | 'profile' | 'settin
 
 function formatAjusd(units: string): string {
   return (Number(units) / 1_000_000).toLocaleString(undefined, { maximumFractionDigits: 6 });
+}
+
+function memberLabel(accountId: string, walletId: string): string {
+  if (accountId === walletId) return 'you';
+  if (accountId.length <= 18) return accountId;
+  return `${accountId.slice(0, 9)}…${accountId.slice(-5)}`;
+}
+
+function memberInitials(accountId: string | null, walletId: string, slot: number): string {
+  if (!accountId) return String(slot + 1).padStart(2, '0');
+  if (accountId === walletId) return 'ME';
+  const name = accountId.includes('-') ? accountId.split('-')[1] : accountId;
+  return name.slice(0, 2).toUpperCase();
+}
+
+function proposalDescription(proposal: CircleProposal, walletId: string): string {
+  if ('RemoveMember' in proposal.proposal_type) {
+    const { member } = proposal.proposal_type.RemoveMember;
+    return `Remove ${memberLabel(member, walletId)} from this circle`;
+  }
+  return 'Continue this circle with its remaining members';
 }
 
 function friendlyTransactionError(error: unknown, fallback: string): string {
@@ -60,6 +81,12 @@ export default function App() {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [copiedInviteId, setCopiedInviteId] = useState<number | null>(null);
   const [inviteCopyNotice, setInviteCopyNotice] = useState<string | null>(null);
+  const [payoutBusy, setPayoutBusy] = useState<'request' | 'confirm' | null>(null);
+  const [payoutNotice, setPayoutNotice] = useState<string | null>(null);
+  const [payoutError, setPayoutError] = useState<string | null>(null);
+  const [voteBusyId, setVoteBusyId] = useState<number | null>(null);
+  const [voteNotice, setVoteNotice] = useState<string | null>(null);
+  const [voteError, setVoteError] = useState<string | null>(null);
   const walletActionDisabled = authenticated && (walletLoading || !nearAccount || Boolean(walletError));
 
   const recoverWalletAfterSigningError = (error: unknown, fallback: string) => {
@@ -180,6 +207,122 @@ export default function App() {
     void fetchOnChainCircles().then(setOnChainCircles).catch((error) => {
       console.warn('Could not refresh circle list', error);
     });
+  };
+
+  const refreshCircleState = async (circleId: number) => {
+    const [circles, status] = await Promise.all([
+      fetchOnChainCircles(),
+      fetchRoundStatus(circleId),
+    ]);
+    setOnChainCircles(circles);
+    if (status) setRoundStatus(status);
+    return { circles, status };
+  };
+
+  const waitForPayoutCompletion = async (circleId: number, round: number, recipient: string) => {
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500));
+      const { circles, status } = await refreshCircleState(circleId);
+      const circle = circles.find((item) => item.id === circleId);
+      if (circle?.collected_members.includes(recipient)) return true;
+      if (status && status.current_round > round) return true;
+    }
+    return false;
+  };
+
+  const handlePayoutAction = async () => {
+    setPayoutNotice(null);
+    setPayoutError(null);
+    if (!nearAccount || !walletId || !selectedCircle || !roundStatus) {
+      setPayoutError(walletError || 'Your wallet or circle details are still loading. Try again shortly.');
+      return;
+    }
+    if (!roundStatus.is_round_fully_paid || !roundStatus.scheduled_recipient) {
+      setPayoutError('The payout becomes available after every active member has contributed.');
+      return;
+    }
+
+    const request = roundStatus.payout_request;
+    const isConfirmation = Boolean(request);
+    if (request?.requester === walletId) {
+      setPayoutNotice('Your request is recorded. A different member must confirm the payout.');
+      return;
+    }
+    if (!request && !roundStatus.payout_ready) {
+      setPayoutError('This payout is already being processed or is not ready. Refresh the circle to check its status.');
+      return;
+    }
+
+    const round = roundStatus.current_round;
+    const recipient = roundStatus.scheduled_recipient;
+    setPayoutBusy(isConfirmation ? 'confirm' : 'request');
+    try {
+      await nearAccount.callFunction({
+        contractId: CONTRACT_ID,
+        methodName: isConfirmation ? 'confirm_payout' : 'request_payout',
+        args: { circle_id: selectedCircle.id },
+        deposit: 0n,
+        gas: isConfirmation ? 180_000_000_000_000n : 80_000_000_000_000n,
+      });
+
+      if (!isConfirmation) {
+        setRoundStatus({
+          ...roundStatus,
+          payout_ready: false,
+          payout_request: {
+            requester: walletId,
+            round,
+            created_at: Math.floor(Date.now() / 1000),
+          },
+        });
+        setPayoutNotice(`Request sent. A different member must confirm the payout to ${memberLabel(recipient, walletId)}.`);
+      } else {
+        setPayoutNotice('Confirmation sent. Waiting for the AJUSD transfer to finish…');
+        const completed = await waitForPayoutCompletion(selectedCircle.id, round, recipient);
+        setPayoutNotice(completed
+          ? `Payout sent to ${memberLabel(recipient, walletId)}. The circle has moved to its next round.`
+          : 'Confirmation was submitted, but the transfer has not appeared yet. Refresh the circle before trying again.');
+      }
+    } catch (error) {
+      await refreshCircleState(selectedCircle.id).catch(() => undefined);
+      const fallback = isConfirmation
+        ? 'Could not confirm the payout. Refresh the circle and try again.'
+        : 'Could not request the payout. Refresh the circle and try again.';
+      setPayoutError(recoverWalletAfterSigningError(error, fallback));
+    } finally {
+      setPayoutBusy(null);
+    }
+  };
+
+  const handleVote = async (proposal: CircleProposal, approve: boolean) => {
+    setVoteNotice(null);
+    setVoteError(null);
+    if (!nearAccount || !walletId || !selectedCircle) {
+      setVoteError(walletError || 'Your sign-in wallet is still getting ready. Try again shortly.');
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(proposal.votes, walletId)) {
+      setVoteNotice('Your vote is already recorded for this proposal.');
+      return;
+    }
+
+    setVoteBusyId(proposal.id);
+    try {
+      const passed = await nearAccount.callFunction<boolean>({
+        contractId: CONTRACT_ID,
+        methodName: 'vote_proposal',
+        args: { circle_id: selectedCircle.id, proposal_id: proposal.id, approve },
+        deposit: 0n,
+        gas: 120_000_000_000_000n,
+      });
+      setVoteNotice(passed ? 'Your vote passed the proposal.' : 'Your vote has been recorded.');
+      setOnChainCircles(await fetchOnChainCircles());
+    } catch (error) {
+      setVoteError(recoverWalletAfterSigningError(error, 'Could not record your vote. Refresh and try again.'));
+      await fetchOnChainCircles().then(setOnChainCircles).catch(() => undefined);
+    } finally {
+      setVoteBusyId(null);
+    }
   };
 
   const handleGetTestTokens = async () => {
@@ -719,11 +862,46 @@ export default function App() {
                   </button>
                 </div>
                 {selectedCircle.status === 'Active' && roundStatus ? (
-                  <>
-                    <p className="circle-pot">{formatAjusd(roundStatus.pot_amount)} <span>AJUSD in the pot</span></p>
-                    {roundStatus.scheduled_recipient && <p className="muted small">Collection turn: {roundStatus.scheduled_recipient === walletId ? 'you' : roundStatus.scheduled_recipient}</p>}
-                    <p className="muted small">{roundStatus.paid_members.length} of {selectedCircle.members.length} members have contributed.</p>
-                  </>
+                  <div className="rotation-summary">
+                    <div className="rotation-ring" role="img" aria-label={`Round ${roundStatus.current_round + 1} of ${roundStatus.total_rounds}; member rotation`}>
+                      <svg className="rotation-orbit" viewBox="0 0 220 220" aria-hidden="true">
+                        <circle cx="110" cy="110" r="82" />
+                      </svg>
+                      <div className="rotation-center">
+                        <span>Round</span>
+                        <b>{roundStatus.current_round + 1} of {roundStatus.total_rounds}</b>
+                      </div>
+                      {selectedCircle.slots.map((member, index) => {
+                        const angle = (-90 + (360 * index) / selectedCircle.slots.length) * (Math.PI / 180);
+                        const x = Math.cos(angle) * 82;
+                        const y = Math.sin(angle) * 82;
+                        const current = roundStatus.current_round === index;
+                        const collected = Boolean(member && selectedCircle.collected_members.includes(member));
+                        return (
+                          <span
+                            className={`rotation-node ${current ? 'is-current' : collected ? 'is-collected' : ''}`}
+                            key={`rotation-${selectedCircle.id}-${index}`}
+                            style={{ left: `calc(50% + ${x}px)`, top: `calc(50% + ${y}px)` }}
+                            title={`${member ? memberLabel(member, walletId) : 'Open place'}, slot ${index + 1}`}
+                          >
+                            {memberInitials(member, walletId, index)}
+                          </span>
+                        );
+                      })}
+                    </div>
+                    <div className="rotation-copy">
+                      <p className="muted small">In the pot</p>
+                      <p className="circle-pot">{formatAjusd(roundStatus.pot_amount)} <span>AJUSD</span></p>
+                      {roundStatus.scheduled_recipient && (
+                        <p className="muted">
+                          {roundStatus.paid_members.length === selectedCircle.members.length
+                            ? `All ${selectedCircle.members.length} members have paid. `
+                            : `${roundStatus.paid_members.length} of ${selectedCircle.members.length} members have paid. `}
+                          {roundStatus.scheduled_recipient === walletId ? 'You collect' : `${memberLabel(roundStatus.scheduled_recipient, walletId)} collects`} this round.
+                        </p>
+                      )}
+                    </div>
+                  </div>
                 ) : selectedCircle.status === 'Open' ? (
                   <p className="muted">Contributions open once every place is filled.</p>
                 ) : selectedCircle.status === 'Active' ? (
@@ -768,16 +946,26 @@ export default function App() {
                   {selectedCircle.slots.map((member, index) => {
                     const paid = Boolean(member && roundStatus?.paid_members.includes(member));
                     const collecting = roundStatus?.current_round === index && selectedCircle.status === 'Active';
+                    const collected = Boolean(member && selectedCircle.collected_members.includes(member));
+                    const memberStatus = !member
+                      ? 'Open place'
+                      : collected
+                        ? 'Collected'
+                        : collecting
+                          ? 'Collects now'
+                          : paid
+                            ? 'Paid, waiting'
+                            : 'Awaiting payment';
                     return (
                       <div className="row" key={`${selectedCircle.id}-${index}`}>
-                        <span className="av">{member ? (member === walletId ? 'You' : member.slice(0, 2).toUpperCase()) : String(index + 1).padStart(2, '0')}</span>
+                        <span className="av">{memberInitials(member, walletId, index)}</span>
                         <span className="grow">
-                          <b>{member ? (member === walletId ? 'You' : member) : 'Open place'}</b>
+                          <b>{member ? (member === walletId ? 'You' : memberLabel(member, walletId)) : 'Open place'}</b>
                           <br />
-                          <span className="muted small">Slot {index + 1}{collecting ? ' ? collects this round' : ''}</span>
+                          <span className="muted small">Slot {index + 1}</span>
                         </span>
                         {member && roundStatus && selectedCircle.status === 'Active' && (
-                          <span className={`chip ${paid ? '' : 'wait'}`}>{paid ? 'Contributed' : 'Not yet'}</span>
+                          <span className={`chip ${collecting ? 'late' : paid || collected ? '' : 'wait'}`}>{memberStatus}</span>
                         )}
                       </div>
                     );
@@ -785,10 +973,71 @@ export default function App() {
                 </div>
               </div>
 
-              {roundStatus?.is_round_fully_paid && (
-                <div className="notice" role="status">
-                  <svg className="i"><use href="#info" /></svg>
-                  <p>Everyone has contributed. Payout approval is the next step to connect in the app.</p>
+              <div className="circle-subsection">
+                <h2>Votes</h2>
+                <div className="panel votes-panel">
+                  {selectedCircle.proposals.filter((proposal) => !proposal.executed).length ? (
+                    selectedCircle.proposals.filter((proposal) => !proposal.executed).map((proposal) => {
+                      const hasVoted = Object.prototype.hasOwnProperty.call(proposal.votes, walletId);
+                      const yesVotes = Object.values(proposal.votes).filter(Boolean).length;
+                      const noVotes = Object.values(proposal.votes).filter((vote) => !vote).length;
+                      return (
+                        <article className="vote-item" key={`${selectedCircle.id}-${proposal.id}`}>
+                          <div className="vote-copy">
+                            <b>{proposalDescription(proposal, walletId)}</b>
+                            <span className="muted small">{yesVotes} approve · {noVotes} reject</span>
+                          </div>
+                          {hasVoted ? (
+                            <span className="chip">You voted {proposal.votes[walletId] ? 'to approve' : 'to reject'}</span>
+                          ) : (
+                            <div className="vote-actions">
+                              <button className="btn" type="button" disabled={walletActionDisabled || voteBusyId !== null} onClick={() => void handleVote(proposal, false)}>
+                                Reject
+                              </button>
+                              <button className="btn primary" type="button" disabled={walletActionDisabled || voteBusyId !== null} onClick={() => void handleVote(proposal, true)}>
+                                {voteBusyId === proposal.id ? 'Recording…' : 'Approve'}
+                              </button>
+                            </div>
+                          )}
+                        </article>
+                      );
+                    })
+                  ) : (
+                    <p className="muted">No open votes right now.</p>
+                  )}
+                  {voteNotice && <p className="action-feedback" role="status">{voteNotice}</p>}
+                  {voteError && <p className="action-feedback error" role="alert">{voteError}</p>}
+                </div>
+              </div>
+
+              {selectedCircle.status === 'Active' && roundStatus && (roundStatus.is_round_fully_paid || payoutNotice || payoutError) && (
+                <div className="payout-action-panel">
+                  {roundStatus.is_round_fully_paid && roundStatus.scheduled_recipient && (
+                    <>
+                      <p className="muted small">Ready for release</p>
+                      <p className="payout-summary">{formatAjusd(roundStatus.pot_amount)} AJUSD to {memberLabel(roundStatus.scheduled_recipient, walletId)}</p>
+                      {roundStatus.payout_request ? (
+                        roundStatus.payout_request.requester === walletId ? (
+                          <p className="muted small">Your request is recorded. Another member must confirm the payout.</p>
+                        ) : (
+                          <button className="btn primary payout-button" type="button" disabled={payoutBusy !== null || walletActionDisabled} onClick={() => void handlePayoutAction()}>
+                            {payoutBusy === 'confirm' ? 'Confirming payout…' : `Confirm payout to ${memberLabel(roundStatus.scheduled_recipient, walletId)}`}
+                          </button>
+                        )
+                      ) : roundStatus.payout_ready ? (
+                        <>
+                          <p className="muted small">A different member must confirm before AJUSD transfers.</p>
+                          <button className="btn primary payout-button" type="button" disabled={payoutBusy !== null || walletActionDisabled} onClick={() => void handlePayoutAction()}>
+                            {payoutBusy === 'request' ? 'Requesting payout…' : `Release payout to ${memberLabel(roundStatus.scheduled_recipient, walletId)}`}
+                          </button>
+                        </>
+                      ) : (
+                        <p className="muted small">Payout processing is underway. Refresh to check its status.</p>
+                      )}
+                    </>
+                  )}
+                  {payoutNotice && <p className="action-feedback" role="status">{payoutNotice}</p>}
+                  {payoutError && <p className="action-feedback error" role="alert">{payoutError}</p>}
                 </div>
               )}
             </>

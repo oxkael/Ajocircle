@@ -4,6 +4,19 @@ export const TEST_TOKEN_SYMBOL = 'AJUSD';
 export const TEST_TOKEN_DECIMALS = 6;
 export const RPC_URL = 'https://test.rpc.fastnear.com';
 
+export type CircleProposalType =
+  | { RemoveMember: { member: string; had_collected: boolean } }
+  | { ContinueCircle: null };
+
+export interface CircleProposal {
+  id: number;
+  proposer: string;
+  proposal_type: CircleProposalType;
+  votes: Record<string, boolean>;
+  passed: boolean;
+  executed: boolean;
+}
+
 export interface OnChainCircle {
   id: number;
   name: string;
@@ -21,7 +34,7 @@ export interface OnChainCircle {
   round_payments: Record<string, string[]>;
   collected_members: string[];
   payout_request: { requester: string; round: number; created_at: number } | null;
-  proposals: unknown[];
+  proposals: CircleProposal[];
   removed_members: string[];
 }
 
