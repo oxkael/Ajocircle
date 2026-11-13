@@ -26,3 +26,7 @@ lerna-debug.log*
 *.njsproj
 *.sln
 *.sw?
+
+# Separate starter and local browser data
+/clean-app/
+/edge-debug-profile/
