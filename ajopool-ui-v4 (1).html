@@ -1,0 +1,321 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<title>Ajopool UI v4</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens: change colours here only */
+:root{
+  color-scheme:light;
+  --bg:#FFFFFF; --surface:#F4F6F4; --ink:#0F1613; --muted:#65706A; --line:#E4E8E4;
+  --accent:#0B4A3E; --accent-ink:#FFFFFF; --accent-soft:#E3F0EB;
+  --hero:#E3F6EC; --hero-ink:#0F1613; --hero-muted:#4C6A5E; --cta:#0F6B4F; --cta-ink:#FFFFFF;
+  --warn:#8A5A00; --warn-soft:#FBEFD3; --bad:#A63A26; --bad-soft:#F8E3DE;
+  --r:20px; --nav-h:64px; --side-w:248px;
+  --font:"Instrument Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0}
+html{height:100%;scroll-padding-top:env(safe-area-inset-top,0px)}
+body{min-height:100%;background:var(--bg);color:var(--ink);font:400 16px/1.5 var(--font);
+  font-variant-numeric:tabular-nums;-webkit-font-smoothing:antialiased;
+  padding-top:env(safe-area-inset-top,0px)}
+h1{font-size:1.75rem;line-height:1.2;font-weight:700;letter-spacing:-.02em}
+h2{font-size:1.0625rem;font-weight:600;margin:0 0 .5rem}
+p{max-width:60ch}.muted{color:var(--muted)}.small{font-size:.875rem}
+a{color:inherit}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px;border-radius:6px}
+.i{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round;flex:none}
+
+/* Shell */
+main{padding:24px 20px calc(var(--nav-h) + 96px + env(safe-area-inset-bottom,0px));max-width:720px;margin:0 auto}
+.side{display:none}
+.tabs{position:fixed;inset:auto 0 0 0;height:calc(var(--nav-h) + env(safe-area-inset-bottom,0px));
+  padding-bottom:env(safe-area-inset-bottom,0px);background:var(--bg);border-top:1px solid var(--line);
+  display:grid;grid-template-columns:repeat(5,1fr);z-index:5}
+.tabs a,.side a{display:flex;text-decoration:none;color:var(--muted);font-size:.75rem;font-weight:500}
+.tabs a{flex-direction:column;align-items:center;justify-content:center;gap:2px;min-height:44px}
+.tabs a[aria-current=page],.side a[aria-current=page]{color:var(--accent)}
+.tabs .make{color:var(--cta-ink)}
+.tabs .make span.dot{background:var(--cta);width:44px;height:44px;border-radius:50%;display:grid;place-items:center}
+.badge{background:var(--bad);color:#fff;border-radius:99px;font-size:.6875rem;font-weight:600;padding:0 6px;min-width:18px;text-align:center;margin-left:auto}
+section{display:none}section.on,section:target{display:block}
+body:not(:has(section:target)) #home{display:block}
+section>*+*{margin-top:24px}
+.head{display:flex;flex-direction:column;gap:4px}
+
+/* Parts */
+.panel{background:var(--surface);border-radius:var(--r);padding:20px}
+.list{background:var(--surface);border-radius:var(--r);overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:14px 16px;min-height:56px;text-decoration:none}
+.row+.row{border-top:1px solid var(--line)}
+.row .grow{flex:1;min-width:0}.row b{font-weight:600}
+.av{width:40px;height:40px;border-radius:50%;background:var(--accent-soft);color:var(--accent);
+  display:grid;place-items:center;font-weight:600;font-size:.875rem;flex:none}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:48px;padding:0 20px;
+  border-radius:14px;border:0;background:var(--surface);color:var(--ink);
+  font:600 1rem var(--font);cursor:pointer;text-decoration:none}
+.btn.primary{background:var(--cta);color:var(--cta-ink)}
+.btn[disabled]{opacity:.55;cursor:not-allowed}
+.chip{display:inline-flex;align-items:center;gap:6px;font-size:.8125rem;font-weight:600;padding:3px 10px;
+  border-radius:99px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+.chip.wait{background:var(--line);color:var(--muted)}
+.chip.late{background:var(--warn-soft);color:var(--warn)}
+.chip.bad{background:var(--bad-soft);color:var(--bad)}
+.chip .i{width:14px;height:14px;stroke-width:2.25}
+.bar{height:6px;border-radius:9px;background:var(--bg);overflow:hidden;margin-top:8px}
+.bar i{display:block;height:100%;background:var(--cta)}
+.money{font-weight:700;letter-spacing:-.01em}
+.big{font-size:2.25rem;line-height:1.1;font-weight:700;letter-spacing:-.03em}
+.notice{display:flex;gap:12px;align-items:flex-start;background:var(--accent-soft);border-radius:var(--r);padding:14px 16px}
+.notice .i{color:var(--accent);margin-top:2px}
+
+/* Hero surface: one per screen */
+.hero{background:var(--hero);color:var(--hero-ink);border-radius:28px;padding:24px;display:flex;flex-direction:column;gap:4px}
+.hero .muted{color:var(--hero-muted)}
+.hero .btn.primary{align-self:flex-start;margin-top:16px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.stats p{font-size:.8125rem;color:var(--muted)}
+.stats b{display:block;font-size:1.25rem;font-weight:700;letter-spacing:-.02em;margin-top:2px}
+
+/* Circle ring: the one memorable element */
+.ring{display:grid;gap:16px;align-items:center;justify-items:center;text-align:center}
+.ring svg{width:min(100%,260px);height:auto}
+.ring .n{fill:var(--bg);stroke:var(--line);stroke-width:2}
+.ring .done{fill:var(--accent);stroke:var(--accent)}
+.ring .now{fill:var(--bg);stroke:var(--accent);stroke-width:4}
+.ring text{font:600 13px var(--font);fill:var(--muted);text-anchor:middle;dominant-baseline:central}
+.ring .done+text{fill:var(--accent-ink)}.ring .now+text{fill:var(--accent)}
+
+/* Forms */
+label{display:block;font-weight:600;margin-bottom:6px}
+.field{margin-bottom:18px}
+input[type=text],input[type=number]{width:100%;min-height:48px;padding:0 16px;border:0;
+  border-radius:14px;background:var(--surface);color:var(--ink);font:400 1rem var(--font)}
+.seg{display:grid;grid-template-columns:1fr 1fr;background:var(--surface);border-radius:14px;padding:4px;gap:4px}
+.seg label{margin:0;font-weight:500}
+.seg input{position:absolute;opacity:0}
+.seg span{display:grid;place-items:center;min-height:44px;border-radius:11px;cursor:pointer}
+.seg input:checked+span{background:var(--cta);color:var(--cta-ink);font-weight:600}
+.seg input:focus-visible+span{outline:3px solid var(--accent);outline-offset:-3px}
+.hint{font-size:.875rem;color:var(--muted);margin-top:6px}
+.switch{width:48px;height:28px;border-radius:99px;background:var(--line);position:relative;border:0;cursor:pointer;flex:none}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--surface);transition:transform .15s}
+.switch[aria-checked=true]{background:var(--accent)}.switch[aria-checked=true]::after{transform:translateX(20px)}
+dl{display:grid;grid-template-columns:1fr auto;gap:0}
+dl div{display:contents}dt,dd{padding:14px 16px;border-top:1px solid var(--line)}
+dl div:first-child dt,dl div:first-child dd{border-top:0}dd{font-weight:700}
+
+/* Primary action bar: thumb zone on phones */
+.action{position:fixed;left:0;right:0;bottom:calc(var(--nav-h) + env(safe-area-inset-bottom,0px));
+  padding:12px 20px;background:var(--bg);border-top:1px solid var(--line);z-index:4}
+.action .btn{width:100%;max-width:680px;display:flex;margin:0 auto}
+
+@media (min-width:1024px){
+  .tabs{display:none}
+  .side{display:flex;flex-direction:column;gap:4px;position:fixed;inset:0 auto 0 0;width:var(--side-w);
+    padding:28px 16px;background:var(--bg);border-right:1px solid var(--line)}
+  .side .logo{font-weight:700;font-size:1.25rem;letter-spacing:-.02em;padding:0 12px 20px}
+  .side a{align-items:center;gap:12px;padding:0 12px;min-height:44px;border-radius:10px;font-size:.9375rem}
+  .side a:hover{background:var(--surface)}.side a[aria-current=page]{background:var(--accent-soft)}
+  .side .sp{flex:1}
+  main{margin-left:var(--side-w);max-width:none;padding:40px 48px 64px}
+  main>section{max-width:720px}
+  .action{position:static;padding:0;border:0;background:none;margin-top:24px}
+  .action .btn{width:auto;margin:0}
+  .ring{grid-template-columns:auto 1fr;text-align:left;justify-items:start;gap:32px}
+}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+<noscript><style>section{display:block!important}</style></noscript>
+</head>
+<body>
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+<symbol id="home" viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></symbol>
+<symbol id="users" viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c0-3.6 2.9-6 6.5-6s6.5 2.4 6.5 6"/><circle cx="17.5" cy="9" r="2.5"/><path d="M18 14.2c2.2.3 3.8 2.1 3.8 4.3"/></symbol>
+<symbol id="plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="bell" viewBox="0 0 24 24"><path d="M6 16v-5a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 21h4"/></symbol>
+<symbol id="user" viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-7 8-7s8 2.6 8 7"/></symbol>
+<symbol id="gear" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h2M10 17h10"/><circle cx="16" cy="7" r="2"/><circle cx="8" cy="17" r="2"/></symbol>
+<symbol id="help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.6 2.6 0 115 .8c0 1.7-2.5 2-2.5 3.7M12 17h.01"/></symbol>
+<symbol id="check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+<symbol id="clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+<symbol id="info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h.01"/></symbol>
+</defs></svg>
+
+<nav class="side" aria-label="Main">
+  <div class="logo">Ajopool</div>
+  <a href="#home"><svg class="i"><use href="#home"/></svg>Home</a>
+  <a href="#circle"><svg class="i"><use href="#users"/></svg>My circles</a>
+  <a href="#create"><svg class="i"><use href="#plus"/></svg>Create circle</a>
+  <a href="#activity"><svg class="i"><use href="#bell"/></svg>Activity<span class="badge">3</span></a>
+  <a href="#profile"><svg class="i"><use href="#user"/></svg>Profile</a>
+  <span class="sp"></span>
+  <a href="#settings"><svg class="i"><use href="#gear"/></svg>Settings</a>
+  <a href="#help"><svg class="i"><use href="#help"/></svg>Help</a>
+</nav>
+
+<main id="main">
+
+<!-- HOME -->
+<section id="home">
+  <div class="head"><p class="muted">Good evening</p><h1>Ngozi</h1></div>
+  <div class="hero">
+    <p class="muted small">Next payment</p>
+    <p class="big money">₦20,000</p>
+    <p class="muted">Sunday Savers, due Friday 14 November</p>
+    <a class="btn primary" href="#circle">Pay now</a>
+  </div>
+  <div class="notice"><svg class="i"><use href="#info"/></svg>
+    <p><b>Tunde can collect ₦120,000.</b> Sunday Savers is fully paid. A member needs to release the payout and another to confirm it.</p></div>
+  <div class="stats">
+    <div><p>Active circles</p><b>2</b></div>
+    <div><p>Paid in so far</p><b>₦60,000</b></div>
+    <div><p>Your next payout</p><b>₦120,000</b><span class="muted small">Round 5 of 6</span></div>
+  </div>
+  <div>
+    <h2>Your circles</h2>
+    <div class="list">
+      <a class="row" href="#circle"><span class="av">SS</span>
+        <span class="grow"><b>Sunday Savers</b><br><span class="muted small">₦20,000 every week, round 3 of 6</span>
+        <span class="bar"><i style="width:50%"></i></span></span><span class="chip">You collect 5th</span></a>
+      <a class="row" href="#circle"><span class="av">MW</span>
+        <span class="grow"><b>Market Women Monthly</b><br><span class="muted small">₦50,000 every month, 2 slots open</span>
+        <span class="bar"><i style="width:75%"></i></span></span><span class="chip wait">Not started</span></a>
+    </div>
+  </div>
+  <div>
+    <h2>Recent</h2>
+    <div class="list">
+      <div class="row"><span class="grow">You paid ₦20,000<br><span class="muted small">Sunday Savers, 7 November</span></span></div>
+      <div class="row"><span class="grow">Chidi collected ₦120,000<br><span class="muted small">Sunday Savers, 31 October</span></span></div>
+      <div class="row"><span class="grow">Funmi joined Market Women Monthly<br><span class="muted small">29 October</span></span></div>
+    </div>
+  </div>
+</section>
+
+<!-- CIRCLE -->
+<section id="circle">
+  <div class="head"><h1>Sunday Savers</h1><p class="muted">₦20,000 every week, 6 members, round 3 of 6</p></div>
+  <div class="panel ring">
+    <svg viewBox="0 0 200 200" role="img" aria-label="Rotation: Tunde collects in round 3. Two members have collected.">
+      <circle cx="100" cy="100" r="70" fill="none" stroke="var(--line)" stroke-width="2"/>
+      <circle class="n done" cx="100" cy="30" r="17"/><text x="100" y="30">AM</text>
+      <circle class="n done" cx="160.6" cy="65" r="17"/><text x="160.6" y="65">CE</text>
+      <circle class="n now" cx="160.6" cy="135" r="17"/><text x="160.6" y="135">TA</text>
+      <circle class="n" cx="100" cy="170" r="17"/><text x="100" y="170">NO</text>
+      <circle class="n" cx="39.4" cy="135" r="17"/><text x="39.4" y="135">IB</text>
+      <circle class="n" cx="39.4" cy="65" r="17"/><text x="39.4" y="65">FA</text>
+      <text x="100" y="94" style="font-size:12px">Round</text>
+      <text x="100" y="112" style="font-size:22px;fill:var(--ink)">3 of 6</text>
+    </svg>
+    <div>
+      <p class="muted small">In the pot</p>
+      <p class="big money">₦120,000</p>
+      <p class="muted">All 6 members have paid. Tunde collects this round.</p>
+    </div>
+  </div>
+  <div>
+    <h2>Members</h2>
+    <div class="list">
+      <div class="row"><span class="av">AM</span><span class="grow"><b>Amaka</b><br><span class="muted small">Slot 1</span></span><span class="chip"><svg class="i"><use href="#check"/></svg>Collected</span></div>
+      <div class="row"><span class="av">CE</span><span class="grow"><b>Chidi</b><br><span class="muted small">Slot 2</span></span><span class="chip"><svg class="i"><use href="#check"/></svg>Collected</span></div>
+      <div class="row"><span class="av">TA</span><span class="grow"><b>Tunde</b><br><span class="muted small">Slot 3</span></span><span class="chip late"><svg class="i"><use href="#clock"/></svg>Collects now</span></div>
+      <div class="row"><span class="av">NO</span><span class="grow"><b>Ngozi (you)</b><br><span class="muted small">Slot 4</span></span><span class="chip wait">Paid, waiting</span></div>
+      <div class="row"><span class="av">IB</span><span class="grow"><b>Ibrahim</b><br><span class="muted small">Slot 5</span></span><span class="chip wait">Paid, waiting</span></div>
+      <div class="row"><span class="av">FA</span><span class="grow"><b>Funmi</b><br><span class="muted small">Slot 6</span></span><span class="chip wait">Paid, waiting</span></div>
+    </div>
+  </div>
+  <div>
+    <h2>Votes</h2>
+    <div class="panel"><p class="muted">No open votes. If someone misses a payment, any member can propose removing them here.</p></div>
+  </div>
+  <div class="action"><button class="btn primary" id="release">Release payout to Tunde</button></div>
+</section>
+
+<!-- CREATE -->
+<section id="create">
+  <div class="head"><h1>Create a circle</h1><p class="muted">You set it up and share the link. You never hold the money.</p></div>
+  <form onsubmit="return false">
+    <div class="field"><label for="n">Circle name</label><input id="n" type="text" placeholder="Sunday Savers" autocomplete="off"></div>
+    <div class="field"><label for="a">Amount each person pays per round (₦)</label><input id="a" type="number" inputmode="numeric" placeholder="20000"></div>
+    <div class="field"><label id="fl">How often</label>
+      <div class="seg" role="radiogroup" aria-labelledby="fl">
+        <label><input type="radio" name="f" checked><span>Weekly</span></label>
+        <label><input type="radio" name="f"><span>Monthly</span></label></div></div>
+    <div class="field"><label for="m">Number of members</label><input id="m" type="number" inputmode="numeric" min="3" max="12" placeholder="6">
+      <p class="hint">Between 3 and 12. Each member picks a collection slot when they join.</p></div>
+    <button class="btn primary" type="submit">Create circle and get link</button>
+  </form>
+</section>
+
+<!-- ACTIVITY -->
+<section id="activity">
+  <div class="head"><h1>Activity</h1><p class="muted">Things that need you.</p></div>
+  <div class="list">
+    <a class="row" href="#circle"><span class="grow"><b>Pay ₦20,000</b><br><span class="muted small">Sunday Savers, due Friday</span></span><span class="chip late">Due soon</span></a>
+    <a class="row" href="#circle"><span class="grow"><b>Confirm payout to Tunde</b><br><span class="muted small">Sunday Savers, released by Amaka</span></span><span class="chip">Ready</span></a>
+    <a class="row" href="#circle"><span class="grow"><b>Vote: remove Emeka?</b><br><span class="muted small">Market Women Monthly, 2 days late</span></span><span class="chip bad">Open vote</span></a>
+  </div>
+</section>
+
+<!-- PROFILE -->
+<section id="profile">
+  <div class="head"><h1>Ngozi Adeyemi</h1><p class="muted">Member since October 2026</p></div>
+  <div class="list"><dl>
+    <div><dt>Cycles completed</dt><dd>2</dd></div>
+    <div><dt>Payments on time</dt><dd>14</dd></div>
+    <div><dt>Payments late</dt><dd>1</dd></div>
+    <div><dt>Defaults</dt><dd>0</dd></div></dl></div>
+  <p class="muted small">New accounts show “No history”. Your record only counts inside Ajopool.</p>
+</section>
+
+<!-- SETTINGS -->
+<section id="settings">
+  <div class="head"><h1>Settings</h1></div>
+  <div class="list">
+    <div class="row"><span class="grow"><b>Display name</b><br><span class="muted small">Ngozi Adeyemi</span></span></div>
+    <div class="row"><span class="grow"><b>Signed in with</b><br><span class="muted small">Google, ngozi@example.com</span></span></div>
+    <div class="row"><span class="grow"><b>Show technical details</b><br><span class="muted small">Account IDs and transaction links</span></span>
+      <button class="switch" role="switch" aria-checked="false" aria-label="Show technical details"></button></div>
+  </div>
+  <div class="notice"><svg class="i"><use href="#info"/></svg><p>This prototype uses test money. No real naira moves.</p></div>
+  <button class="btn">Sign out</button>
+</section>
+
+<!-- HELP -->
+<section id="help">
+  <div class="head"><h1>Help</h1><p class="muted">How an Ajopool circle works.</p></div>
+  <div class="panel"><p>Everyone pays the same amount each round. The full pot goes to one member, in the order agreed at the start, until everyone has collected once. A contract holds the money, so nobody can run off with it.</p></div>
+</section>
+
+</main>
+
+<nav class="tabs" aria-label="Main">
+  <a href="#home"><svg class="i"><use href="#home"/></svg>Home</a>
+  <a href="#circle"><svg class="i"><use href="#users"/></svg>Circles</a>
+  <a href="#create" class="make" aria-label="Create circle"><span class="dot"><svg class="i"><use href="#plus"/></svg></span></a>
+  <a href="#activity"><svg class="i"><use href="#bell"/></svg>Activity</a>
+  <a href="#profile"><svg class="i"><use href="#user"/></svg>Profile</a>
+</nav>
+
+<script>
+const ids=[...document.querySelectorAll("section")].map(s=>s.id);
+function route(){
+  const id=ids.includes(location.hash.slice(1))?location.hash.slice(1):"home";
+  ids.forEach(i=>document.getElementById(i).classList.toggle("on",i===id));
+  document.querySelectorAll("nav a").forEach(a=>{
+    const on=a.getAttribute("href")==="#"+id||(id==="settings"&&a.getAttribute("href")==="#profile"&&a.closest(".tabs"));
+    on?a.setAttribute("aria-current","page"):a.removeAttribute("aria-current")});
+  scrollTo(0,0)}
+addEventListener("hashchange",route);route();
+document.getElementById("release").onclick=e=>{e.target.textContent="Waiting for another member to confirm";e.target.disabled=true};
+document.querySelector(".switch").onclick=e=>e.target.setAttribute("aria-checked",e.target.getAttribute("aria-checked")!=="true");
+</script>
+</body>
+</html>

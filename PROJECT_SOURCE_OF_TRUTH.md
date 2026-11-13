@@ -1,0 +1,57 @@
+﻿# Project source of truth
+
+Use this note to choose the right files when working on Ajocircle.
+
+## Canonical implementation
+
+- **Frontend to run, edit, and ship:** `frontend/`
+- **Circle contract source:** `contracts/circle/`
+- **NEAR/Privy starter reference:** `clean-app/`
+
+`clean-app/` is a separate starter project, not another Ajocircle frontend. Do not run or ship it as the product app. Reuse a piece from it only when it solves a specific integration need in `frontend/` and has been verified.
+
+From the repository root, start the product UI with:
+
+```powershell
+cd frontend
+npm run dev
+```
+
+Vite is configured to serve it at `http://localhost:5181/`.
+
+## Product and protocol decisions
+
+- Product name: **Ajocircle**. Existing on-chain account names such as `ajopool.testnet` are deployment identifiers; changing the brand does not rename an account or contract.
+- Product scope and user flows: `AJOCIRCLE_PROJECT_BRIEF.md`.
+- Sputnik DAO, payout, default, and removal decisions: `AJOPOOL_SPUTNIK_BRIEF.md`. It overrides the main brief only in those areas.
+- The Sputnik brief's **Level 1** design is the target: the circle contract holds the NEP-141 test token and handles payout approvals; each circle's Sputnik DAO handles removal and continue/end votes. Do not start Level 2 DAO custody before its stated checks pass.
+
+## Current implementation status
+
+This repository is not yet an end-to-end working savings-circle app. The app shell exposes a Google sign-in action in its top bar; the create form also prompts unauthenticated users to sign in, then submit again. The create form validates circle details, then directly submits `create_token_circle` and `join` for the organizer's first slot using the Privy-linked NEAR account. It shows progress and result messages, displays the copyable invite link after creation, and offers a retry if the slot-1 join fails. Joined members can also find and copy the same invite link from the circle detail screen. The Privy provider waits for Privy's `ready` state before preparing the NEAR account. A reported `Wallet proxy not initialized` error is a Privy signing failure; the app now explains this in plain language and advises checking the circle list before retrying if transaction status is uncertain. The readiness gate has not yet been verified with a live signed UI transaction. Opening a `?join=<circle_id>` link shows a circle preview and join action. The link is unlisted, not access-controlled: the contract still allows any account that knows an open circle ID to join, so invite-only enforcement requires a contract change. The home and circle screens now use the signed-in member's on-chain circles and round status rather than the former sample circle data. Active circles show each member's contribution state, test AJUSD balance, and a faucet action that registers the user's token account if needed. The contribution button submits NEP-141 `ft_transfer_call` with the circle ID, then checks the returned unused-token amount and on-chain round status before showing success. This new signed UI contribution flow passes the frontend production build but has not yet been exercised with a live Privy account. The latest observed circle #8, `fgbst`, is open with 2 of 6 member slots filled, so it cannot yet accept contributions. Payouts are still not wired to UI transactions. The circle contract supports NEP-141 contributions and token payouts for new token-enabled circles, while retaining native-NEAR support for legacy circles. The NEP-141 flow passed local contract tests and a complete two-member, two-round testnet cycle. Privy login, onboarding funding, and full DAO setup are still not connected into one end-to-end user flow. Treat a UI state change or an existing Wasm file as no proof of an on-chain action or a successful build of the latest source.
+
+When code and a brief disagree, preserve the product rules in the two briefs, applying the Sputnik brief's stated precedence, and surface the conflict before changing an owner-decided rule.
+
+## Sputnik testnet spike status
+
+The controlled S1â€“S3 spike DAO is `ajocircle-s1-20261112005237.sputnikv2.testnet`. Its signer accounts are `member1.ajopool.testnet` and `member2.ajopool.testnet`; their test keys are stored only in the ignored `frontend/.env.local` file.
+
+- **S1 â€” passed:** `get_policy` returned the custom `circle` and `members` roles, fixed two-vote transfer threshold, majority call threshold, proposal bond, and proposal period. [Creation transaction](https://testnet.nearblocks.io/txns/2mPNM1iYoEkToQj7RSG7hAyussmqcFu5x32uKiCr6agD).
+- **S2 â€” passed with scope note:** a member signer was rejected when adding a proposal. A transaction signed as `ajopool.testnet` successfully added the proposal. This confirms Sputnik's account-role permissions; it does not yet prove a method on the circle contract can call Sputnik.
+- **S3 â€” passed:** the transfer proposal stayed `InProgress` after the first member vote and became `Approved` after the second. Both votes appear in `get_proposal`; the test transferred 1 NEAR to the controlled test member. [Proposal creation transaction](https://testnet.nearblocks.io/txns/AhuhRMLbE2yE3yqKRjbkjtXC6Kfgzru77jQeexm62sB1), [second vote transaction](https://testnet.nearblocks.io/txns/AWbEWsxaQVyoMXurXotAj11hVqxigo52UkEUtxCao9HM).
+- **Circle contract upgrade - deployed and verified:** `ajopool.testnet` was upgraded without calling `new()`. The existing `Sunday Savers` circle remained present and unchanged. The upgraded Wasm exposes `start_circle`, `get_circle_dao`, DAO-backed `propose_removal`, and DAO-only `apply_removal`. [Upgrade transaction](https://testnet.nearblocks.io/txns/7GmBVL9MjHk4AYDGrvZnnvEPcS2X1cXNuFcsaCvbmyaE).
+- **S4 - removal and DAO role synchronization verified on testnet:** the role-sync upgrade was deployed to `ajopool.testnet` without reinitializing state. [Deployment transaction](https://testnet.nearblocks.io/txns/B4MakdXd5UgXmssuuCgX6BCY7GCJKaeEGVU6kZP8KDq). Circle 2 created a DAO with 6 NEAR for factory creation and a reusable 1 NEAR role-sync bond reserve. The removal proposal required both members' approval. Applying it removed member2 from the circle and created DAO proposal 1 (`RemoveMemberFromRole`). The remaining active member approved that proposal; `confirm_removal_dao_sync` verified that the DAO `members` role no longer contained member2, and the original 1 NEAR proposal bond was refunded to its proposer. [DAO creation](https://testnet.nearblocks.io/txns/H2Hvfacn7EmnpczgLVcrEKB9Yg7f29QjMCEmaMNtySSG), [removal proposal](https://testnet.nearblocks.io/txns/5L4e7MWmWuQEaP1NeJ5R49ZDo9Sigkf3HyHkpycKukp8), [member1 approval](https://testnet.nearblocks.io/txns/AM9RwMai9xW5LBvV2jVSY6GB3t8TgTi5sfGKxb6ZJxu7), [member2 approval and removal execution](https://testnet.nearblocks.io/txns/5akh296sB3CuynpzbihS4C7iH38fsnbUivZJZL412QaL), [DAO role cleanup approval](https://testnet.nearblocks.io/txns/2DJv53UbsWBVKQdGh7ttkvS5eMoNTuWBYWdEL8wNUMtH), [membership verification](https://testnet.nearblocks.io/txns/6SzZNjUAU7rVYP1cbdEhHeEeAqkHLU2bk995233EVBkQ), [bond refund](https://testnet.nearblocks.io/txns/HZ3jjyxbsHrNouKnqV17qt2QnY2JCMvcvz3V54Ft7tHY). DAO role cleanup allows approval-only voting with threshold 1; only the circle contract can create that proposal type. The original removal still uses the majority `call` threshold. Legacy disposable circle 4 still has its old DAO policy and is not evidence of the updated flow.
+- **S1 funding experiment - passed:** the DAO initially had 7 NEAR, but its storage reserve left too little spendable balance for proposal 1's 2.3 NEAR transfer and bond return. We moved 2 NEAR from the already-funded organizer account into the DAO; member2 then approved, and Sputnik executed the transfer to the organizer. [DAO top-up](https://testnet.nearblocks.io/txns/AeY1xvtMmU4B1TKZFfZo8drRAH79kojg26cLLstaDdKg), [member2 approval and execution](https://testnet.nearblocks.io/txns/BzxYkTEvSmrMp1efPTpXLtvYaXbsTEWckbtA5EQxxsk4). Immediately after S1: organizer 11.481 NEAR, S1 DAO 5.700 NEAR, member1 0.247 NEAR, member2 1.248 NEAR. No additional faucet funding was needed.
+
+## NEP-141 contribution and payout implementation
+
+- `contracts/circle/src/lib.rs` adds `create_token_circle` and `get_circle_token` to associate a circle with one fixed token contract. The `ft_on_transfer` receiver accepts only that token, active members, exact dues, and one payment per round. Rejected transfers return the full amount to the token contract's NEP-141 resolver. Token payouts use a callback: the circle advances only after `ft_transfer` succeeds, and a failed transfer leaves the request retryable. `payout_ready` becomes false while approval or a token transfer is pending.
+- `contracts/test-token/` contains the six-decimal `AJUSD` test token using NEAR's `near-contract-standards`, with storage registration and a bounded faucet. It is test money and cannot be redeemed.
+- Testnet token: `ajusd.ajopool.testnet`. Circle contract: `ajopool.testnet`. The latest circle Wasm upgrade was deployed without reinitializing or replacing stored circles. [Latest circle contract upgrade](https://testnet.nearblocks.io/txns/H8Pm76q3oY3gofSsoQSN7w4qv5CqGwGsr5jpHSv3kaDW). The test token reports six-decimal `AJUSD` metadata.
+- **End-to-end money flow passed:** circle 7 collected 1 AJUSD from each of two members in both rounds. A different second member approved each payout. The recipient followed the fixed slot order; the round advanced after each successful token transfer; both members received one 2 AJUSD pot; the circle ended; and final token balances matched their starting balances. [Circle creation](https://testnet.nearblocks.io/txns/D8B98MYoZKBGS6U67SvJeTZntPmTvvgQq3jSx24VsxtW), [first payout approval](https://testnet.nearblocks.io/txns/43hLmf6fvERQgsPVskQR5USGTfcBrgYXQHzhvd5naRKA), [second payout approval](https://testnet.nearblocks.io/txns/H3C2wxBQrTe8Xif5PgYdP8iM2QM7oJynLXbNt5AXh3Ga). A final read-only check confirmed the token, ended status, collected members, and balances after the latest upgrade.
+- The reusable deployment and full-cycle verification script is `scripts/exercise-nep141-round.mjs`. Local tests: circle contract 7/7 passed; test-token faucet/storage test 1/1 passed; both optimized Wasm artifacts built. `cargo near build` uses `--no-abi` on this Windows setup because ABI generation's host linker fails on NEAR host imports; the optimized Wasm build itself succeeds.
+- Circle 7 did not create a Sputnik DAO. The separate S4 role-sync test remains the DAO membership proof. Product onboarding still needs to create and verify a DAO for each new circle.
+
+Current controlled test-account balances after NEP-141 testnet work and reimbursements: `ajopool.testnet` 2.944 NEAR, `member1.ajopool.testnet` 1.191 NEAR, `member2.ajopool.testnet` 1.192 NEAR, and the S1 DAO 5.700 NEAR. The members' temporary 0.25 NEAR contributions for test-token setup were reimbursed; 0.1 NEAR remains with the organizer to cover contract storage and transaction costs.
+
+The reusable S1 setup and verification script is `scripts/spike-sputnik-s1.mjs`; the S1 balance recovery is recorded in `scripts/resolve-s1-funding.mjs`. S4 setup and balance checks are in `scripts/spike-sputnik-s4.mjs`, `scripts/check-testnet-balance.mjs`, and `scripts/inspect-s1-dao.mjs`. The end-to-end role-sync verification is `scripts/exercise-s4-role-sync.mjs`; the end-to-end NEP-141 test cycle is `scripts/exercise-nep141-round.mjs`.

@@ -1,0 +1,28 @@
+# Environment variables - NEVER commit keys
+.env
+.env.*
+*.env
+.env.local
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+target/
+*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
