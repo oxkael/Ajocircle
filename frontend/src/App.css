@@ -447,6 +447,20 @@ section > * + * {
   padding: 14px 16px;
 }
 
+.wallet-status {
+  margin-bottom: 16px;
+}
+
+.notice.wallet-status {
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.notice.wallet-status .btn {
+  flex: none;
+}
+
 .notice .i {
   color: var(--accent);
   margin-top: 2px;

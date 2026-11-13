@@ -13,7 +13,7 @@ function formatAjusd(units: string): string {
 
 function friendlyTransactionError(error: unknown, fallback: string): string {
   const message = error instanceof Error ? error.message : String(error || '');
-  if (message.includes('Wallet proxy not initialized')) return 'Your sign-in wallet isn’t ready to approve this action. Refresh the page and try again. If it keeps happening, sign out and back in.';
+  if (message.includes('Wallet proxy not initialized')) return 'Your sign-in wallet needed to reconnect. We are preparing it again; try this action once setup finishes.';
   if (/not enough|insufficient/i.test(message)) return 'There is not enough testnet NEAR in your account to cover this step. Ask the prototype organiser to top up your test account.';
   if (/already paid/i.test(message)) return 'Your contribution for this round is already recorded.';
   if (/faucet limit/i.test(message)) return 'The test-token faucet can provide up to 10,000 AJUSD per request.';
@@ -24,7 +24,7 @@ export default function App() {
   const { authenticated, user } = usePrivy();
   const { login } = useLogin();
   const { logout } = useLogout();
-  const { nearAccount, provider, walletId, walletLoading, walletError } = useNEAR();
+  const { nearAccount, provider, walletId, walletLoading, walletError, retryWalletSetup } = useNEAR();
 
   // Active Section Routing (matches #home, #circle, etc.)
   const [activeTab, setActiveTab] = useState<SectionId>('home');
@@ -60,6 +60,13 @@ export default function App() {
   const [joinError, setJoinError] = useState<string | null>(null);
   const [copiedInviteId, setCopiedInviteId] = useState<number | null>(null);
   const [inviteCopyNotice, setInviteCopyNotice] = useState<string | null>(null);
+  const walletActionDisabled = authenticated && (walletLoading || !nearAccount || Boolean(walletError));
+
+  const recoverWalletAfterSigningError = (error: unknown, fallback: string) => {
+    const message = error instanceof Error ? error.message : String(error || '');
+    if (message.includes('Wallet proxy not initialized')) void retryWalletSetup();
+    return friendlyTransactionError(error, fallback);
+  };
 
   // Listen to hash change if user uses browser history / direct links and fetch on-chain state
   useEffect(() => {
@@ -226,7 +233,7 @@ export default function App() {
       setContributionNotice(`${formatAjusd(amountNeeded.toString())} AJUSD test tokens added to your balance.`);
       refreshSelectedCircle();
     } catch (error) {
-      setContributionError(friendlyTransactionError(error, 'Could not add test tokens. Check your testnet balance and try again.'));
+      setContributionError(recoverWalletAfterSigningError(error, 'Could not add test tokens. Check your testnet balance and try again.'));
     } finally {
       setContributionBusy(null);
     }
@@ -282,7 +289,7 @@ export default function App() {
       refreshSelectedCircle();
       setTokenBalance((BigInt(tokenBalance || '0') - due).toString());
     } catch (error) {
-      setContributionError(friendlyTransactionError(error, 'Payment did not go through. Your balance was not marked as paid.'));
+      setContributionError(recoverWalletAfterSigningError(error, 'Payment did not go through. Your balance was not marked as paid.'));
     } finally {
       setContributionBusy(null);
     }
@@ -365,10 +372,8 @@ export default function App() {
         throw new Error('The transaction returned without a circle ID. Refresh your circles before trying again to avoid creating a duplicate.');
       }
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Circle creation failed.';
-      setCreateError(message.includes('Wallet proxy not initialized')
-        ? 'Your sign-in wallet is not ready to approve this action. Refresh the page and try again. If it keeps happening, sign out and back in. Check your circles first if you are unsure whether this one was created.'
-        : message);
+      const message = recoverWalletAfterSigningError(error, 'Circle creation failed.');
+      setCreateError(message);
       setCreatedNotice(null);
       setCreateStage('idle');
       setCreatingCircle(false);
@@ -422,7 +427,7 @@ export default function App() {
       setSelectedCircleId(createdCircleId);
       navigateTo('circle');
     } catch (error) {
-      setCreateError(error instanceof Error ? error.message : 'Could not claim slot 1.');
+      setCreateError(recoverWalletAfterSigningError(error, 'Could not claim slot 1.'));
     } finally {
       setRetryingOrganizerJoin(false);
     }
@@ -457,7 +462,7 @@ export default function App() {
       setSelectedCircleId(circle.id);
       navigateTo('circle');
     } catch (error) {
-      setJoinError(friendlyTransactionError(error, 'Could not join this circle. Refresh and try again.'));
+      setJoinError(recoverWalletAfterSigningError(error, 'Could not join this circle. Refresh and try again.'));
       setOnChainCircles(await fetchOnChainCircles());
     } finally {
       setJoiningCircleId(null);
@@ -583,6 +588,17 @@ export default function App() {
             </button>
           )}
         </div>
+        {authenticated && walletLoading && (
+          <p className="muted small wallet-status" role="status">Preparing your sign-in wallet for NEAR actions…</p>
+        )}
+        {authenticated && walletError && (
+          <div className="notice wallet-status" role="alert">
+            <p>{walletError}</p>
+            <button className="btn" type="button" disabled={walletLoading} onClick={() => void retryWalletSetup()}>
+              {walletLoading ? 'Reconnecting…' : 'Try wallet again'}
+            </button>
+          </div>
+        )}
         {/* HOME SECTION */}
         <section id="home" className={activeTab === 'home' ? 'on' : ''}>
           <div className="head">
@@ -624,7 +640,7 @@ export default function App() {
                       <button
                         className="btn primary"
                         type="button"
-                        disabled={joiningCircleId !== null || Boolean(walletId && invitedCircle.members.includes(walletId))}
+                        disabled={joiningCircleId !== null || walletActionDisabled || Boolean(walletId && invitedCircle.members.includes(walletId))}
                         onClick={() => void handleJoinCircle(invitedCircle)}
                       >
                         {joiningCircleId === invitedCircle.id
@@ -732,12 +748,12 @@ export default function App() {
                     <>
                       <p className="muted small">These are test tokens with no cash value.</p>
                       <p className="muted small">First use may require a small one-time testnet NEAR deposit to set up your AJUSD balance.</p>
-                      <button className="btn primary" type="button" disabled={contributionBusy !== null || circleDataLoading || !roundStatus} onClick={() => void handleGetTestTokens()}>
+                      <button className="btn primary" type="button" disabled={contributionBusy !== null || circleDataLoading || !roundStatus || walletActionDisabled} onClick={() => void handleGetTestTokens()}>
                         {contributionBusy === 'tokens' ? 'Getting test AJUSD?' : `Get ${formatAjusd(roundStatus.amount_per_member)} test AJUSD`}
                       </button>
                     </>
                   ) : (
-                    <button className="btn primary" type="button" disabled={contributionBusy !== null || circleDataLoading} onClick={() => void handlePayContribution()}>
+                    <button className="btn primary" type="button" disabled={contributionBusy !== null || circleDataLoading || walletActionDisabled} onClick={() => void handlePayContribution()}>
                       {contributionBusy === 'payment' ? 'Recording your contribution?' : `Contribute ${formatAjusd(roundStatus.amount_per_member)} AJUSD`}
                     </button>
                   )}
@@ -808,7 +824,7 @@ export default function App() {
               </button>
               {inviteCopyNotice && <p className="muted small" role="status">{inviteCopyNotice}</p>}
               {createStage === 'joining' && !creatingCircle && (
-                <button className="btn" type="button" disabled={retryingOrganizerJoin} onClick={() => void handleRetryOrganizerJoin()}>
+                  <button className="btn" type="button" disabled={retryingOrganizerJoin || walletActionDisabled} onClick={() => void handleRetryOrganizerJoin()}>
                   {retryingOrganizerJoin ? 'Claiming slot 1…' : 'Retry claiming slot 1'}
                 </button>
               )}
@@ -885,7 +901,7 @@ export default function App() {
               <input id="grace" type="number" min="1" max="7" value={graceDays} onChange={e => setGraceDays(e.target.value)} />
               <p className="hint">You’ll join slot 1 after creation. Invite links and DAO setup are not wired yet.</p>
             </div>
-            <button className="btn primary" type="submit" disabled={creatingCircle || walletLoading}>
+            <button className="btn primary" type="submit" disabled={creatingCircle || walletActionDisabled}>
               {creatingCircle
                 ? createStage === 'joining' ? 'Claiming slot 1…' : 'Creating circle…'
                 : !authenticated ? 'Sign in with Google to continue'

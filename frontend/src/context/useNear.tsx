@@ -7,6 +7,7 @@ export interface NearContextValue {
   walletId: string;
   walletLoading: boolean;
   walletError: string | null;
+  retryWalletSetup: () => Promise<void>;
 }
 
 export const NearContext = createContext<NearContextValue | undefined>(undefined);

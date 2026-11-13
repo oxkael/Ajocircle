@@ -1,7 +1,7 @@
-import { usePrivy } from '@privy-io/react-auth';
+import { usePrivy, useUser } from '@privy-io/react-auth';
 import { useCreateWallet, useSignRawHash } from '@privy-io/react-auth/extended-chains';
 import { JsonRpcProvider, Account } from 'near-api-js';
-import { useEffect, useRef, useState, type PropsWithChildren } from 'react';
+import { useCallback, useEffect, useRef, useState, type PropsWithChildren } from 'react';
 import { NearContext } from './useNear';
 import { providerUrl } from '../config';
 import { privySigner } from './signer';
@@ -10,15 +10,40 @@ const provider = new JsonRpcProvider({ url: providerUrl });
 
 export function NEARxPrivy({ children }: PropsWithChildren) {
   const { ready: privyReady, authenticated, user } = usePrivy();
+  const { refreshUser } = useUser();
   const [walletId, setWalletId] = useState('');
   const [nearAccount, setNearAccount] = useState<Account | null>(null);
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletError, setWalletError] = useState<string | null>(null);
+  const [provisionedWallet, setProvisionedWallet] = useState<{ userId: string; address: string } | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   const { signRawHash } = useSignRawHash();
   const { createWallet } = useCreateWallet();
   const creatingWallet = useRef(false);
-  const initializingAddress = useRef('');
+  const initializingAttempt = useRef('');
+
+  const retryWalletSetup = useCallback(async () => {
+    setNearAccount(null);
+    setWalletId('');
+    setWalletError(null);
+    setWalletLoading(true);
+    initializingAttempt.current = '';
+
+    try {
+      const refreshedUser = await refreshUser();
+      const nearWallet = refreshedUser.linkedAccounts.find(
+        (account) => account.type === 'wallet' && account.chainType === 'near'
+      );
+      if (nearWallet?.type === 'wallet') {
+        setProvisionedWallet({ userId: refreshedUser.id, address: nearWallet.address });
+      }
+    } catch (error) {
+      console.warn('Could not refresh Privy wallet details before retrying', error);
+    } finally {
+      setRetryKey((key) => key + 1);
+    }
+  }, [refreshUser]);
 
   useEffect(() => {
     if (!privyReady) {
@@ -27,7 +52,9 @@ export function NEARxPrivy({ children }: PropsWithChildren) {
     }
 
     if (!authenticated || !user) {
-      initializingAddress.current = '';
+      initializingAttempt.current = '';
+      creatingWallet.current = false;
+      setProvisionedWallet(null);
       setWalletId('');
       setNearAccount(null);
       setWalletLoading(false);
@@ -35,49 +62,68 @@ export function NEARxPrivy({ children }: PropsWithChildren) {
       return;
     }
 
-    // Select the NEAR wallet explicitly
-    const nearWallet = user.linkedAccounts.find(
+    const linkedNearWallet = user.linkedAccounts.find(
       (account) => account.type === 'wallet' && account.chainType === 'near'
     );
+    const provisionedAddress = provisionedWallet?.userId === user.id
+      ? provisionedWallet.address
+      : '';
+    const nearWalletAddress = linkedNearWallet?.type === 'wallet'
+      ? linkedNearWallet.address
+      : provisionedAddress;
 
-    if (nearWallet?.type !== 'wallet') {
-      if (!creatingWallet.current) {
-        creatingWallet.current = true;
-        setWalletLoading(true);
-        setWalletError(null);
-        createWallet({ chainType: 'near' })
-          .catch((error) => {
-            console.error('Could not create NEAR wallet', error);
-            setWalletError(error instanceof Error ? error.message : 'Could not create your NEAR wallet.');
-          })
-          .finally(() => {
-            creatingWallet.current = false;
-            setWalletLoading(false);
-          });
-      }
+    if (!nearWalletAddress) {
+      setWalletLoading(true);
+      setWalletError(null);
+      if (creatingWallet.current) return;
+
+      creatingWallet.current = true;
+      void (async () => {
+        try {
+          const { user: refreshedUser, wallet } = await createWallet({ chainType: 'near' });
+          const refreshedNearWallet = refreshedUser.linkedAccounts.find(
+            (account) => account.type === 'wallet' && account.chainType === 'near'
+          );
+          const address = refreshedNearWallet?.type === 'wallet'
+            ? refreshedNearWallet.address
+            : wallet.address;
+          setProvisionedWallet({ userId: refreshedUser.id, address });
+        } catch (error) {
+          console.error('Could not create NEAR wallet', error);
+          setWalletError('We could not prepare your sign-in wallet. Try again.');
+          setWalletLoading(false);
+        } finally {
+          creatingWallet.current = false;
+        }
+      })();
       return;
     }
 
-    if (initializingAddress.current === nearWallet.address) return;
-    initializingAddress.current = nearWallet.address;
+    const attemptId = `${user.id}:${nearWalletAddress}:${retryKey}`;
+    if (initializingAttempt.current === attemptId) return;
+    initializingAttempt.current = attemptId;
     setWalletLoading(true);
     setWalletError(null);
+    setNearAccount(null);
+    setWalletId('');
 
     void (async () => {
       try {
-        const embeddedSigner = new privySigner(signRawHash, nearWallet.address, provider);
+        const embeddedSigner = new privySigner(signRawHash, nearWalletAddress, provider);
         const publicKey = (await embeddedSigner.getPublicKey()).toString();
-        const implicitAccountId = nearWallet.address.replace(/^0x/i, '').toLowerCase();
-        const storageKey = `ajocircle:near-account:${nearWallet.address}`;
+        const implicitAccountId = nearWalletAddress.replace(/^0x/i, '').toLowerCase();
+        const storageKey = `ajocircle:near-account:${nearWalletAddress}`;
         let accountId = '';
+
         if (/^[a-f0-9]{64}$/.test(implicitAccountId)) {
           try {
             await provider.viewAccount({ accountId: implicitAccountId });
             accountId = implicitAccountId;
           } catch {
-            // A new Privy key has no funded implicit account yet. The testnet helper creates one.
+            // A newly created Privy key has no funded implicit account yet.
           }
         }
+
         const savedAccountId = window.localStorage.getItem(storageKey);
         if (savedAccountId) {
           try {
@@ -102,23 +148,26 @@ export function NEARxPrivy({ children }: PropsWithChildren) {
           window.localStorage.setItem(storageKey, accountId);
         }
 
-        if (initializingAddress.current !== nearWallet.address) return;
-        const signer = new privySigner(signRawHash, accountId, provider, nearWallet.address);
+        if (initializingAttempt.current !== attemptId) return;
+        const signer = new privySigner(signRawHash, accountId, provider, nearWalletAddress);
         setNearAccount(new Account(accountId, provider, signer));
         setWalletId(accountId);
       } catch (error) {
         console.error('Could not prepare NEAR testnet account', error);
-        setNearAccount(null);
-        setWalletId('');
-        setWalletError(error instanceof Error ? error.message : 'Could not prepare your NEAR testnet account.');
+        if (initializingAttempt.current === attemptId) {
+          initializingAttempt.current = '';
+          setNearAccount(null);
+          setWalletId('');
+          setWalletError('We could not prepare your NEAR account. Try again.');
+        }
       } finally {
-        if (initializingAddress.current === nearWallet.address) setWalletLoading(false);
+        if (initializingAttempt.current === attemptId) setWalletLoading(false);
       }
     })();
-  }, [privyReady, authenticated, user, createWallet, signRawHash]);
+  }, [privyReady, authenticated, user, createWallet, signRawHash, provisionedWallet, retryKey]);
 
   return (
-    <NearContext.Provider value={{ provider, nearAccount, walletId, walletLoading, walletError }}>
+    <NearContext.Provider value={{ provider, nearAccount, walletId, walletLoading, walletError, retryWalletSetup }}>
       {children}
     </NearContext.Provider>
   );

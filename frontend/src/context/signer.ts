@@ -36,11 +36,28 @@ export class privySigner extends Signer {
   }
 
   async signBytes(bytes: Uint8Array) {
-    const { signature } = await this.signRawHash({
+    const request = {
       address: this.privyAddress,
-      chainType: 'near',
-      hash: `0x${bytesToHex(bytes)}`,
-    });
-    return hexToBytes(signature.replace(/^0x/, ''));
+      chainType: 'near' as const,
+      hash: `0x${bytesToHex(bytes)}` as `0x${string}`,
+    };
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const { signature } = await this.signRawHash(request);
+        return hexToBytes(signature.replace(/^0x/, ''));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const walletProxyNotReady = message.includes('Wallet proxy not initialized');
+        if (!walletProxyNotReady || attempt === 1) throw error;
+
+        // Privy's extended-chain signer initializes its wallet proxy lazily.
+        // Give that initialization a brief chance to settle, then retry only
+        // the signature request (the NEAR transaction has not been submitted).
+        await new Promise((resolve) => window.setTimeout(resolve, 400));
+      }
+    }
+
+    throw new Error('Could not sign with your NEAR wallet.');
   }
 }
