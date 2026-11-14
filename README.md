@@ -1,51 +1,30 @@
-# Ajocircle
+- What Ajocircle is
+- How to test
+- What Near makes possible
+- Related Project
+## Introducing Ajocircle on Near
+Across Africa, people save through rotating circles: ajo, esusu, susu, chama, and more. Members contribute regularly, then take turns receiving the pot. The model depends on trust, but contributions and payouts are often tracked manually, leaving members with little shared record if something goes wrong.
+Ajocircle brings those circle rules onto NEAR. A smart contract holds the funds, records contributions, and enforces the agreed payout order. Members can see who has paid and whose turn it is. When a round is fully funded, one member requests the payout and another confirms it. The contract sends the pot to the scheduled recipient.
+Members join with Google or email and use the app to create or join a circle, contribute, and follow each round. Ajocircle is a NEAR testnet prototype using AJUSD test tokens
 
-Ajocircle is a NEAR testnet prototype for rotating savings circles. Members contribute the same amount each round, and the circle contract sends the pot to the member assigned to that round. The prototype uses AJUSD test tokens; it has no real money, naira on-ramp, or redemption.
+## How to test Ajocircle
+The organiser
+1. Sign in with Google or email.
+2. Create a circle by setting its name, contribution amount, schedule, and member limit.
+3. Copy the invite link and share it with the people they want to join.
+Each member
+4. Open the invite link, sign in, and join an available place in the circle.
+5. Get test AJUSD if needed. Complete any setup the app asks for before contributing.
+6. Open the circle to see the current round, whose turn it is, and each member’s payment status.
+7. Contribute the round’s amount. The circle shows that contribution as paid once it is recorded.
+When everyone has paid
+8. One member requests the payout.
+9. A different member confirms it.
+10. The contract sends the pot to the person scheduled to collect. The circle advances to the next round.
 
-## Repository map
+## What Near makes Possible
 
-- `frontend/` — React and TypeScript web app.
-- `contracts/circle/` — Rust NEAR contract for circles, contributions, payout approvals, and DAO-related contract methods.
-- `contracts/test-token/` — Rust NEP-141 AJUSD test token and faucet.
-- `scripts/` — testnet inspection, deployment, funding, and transaction-flow scripts.
-- `AJOCIRCLE_PROJECT_BRIEF.md`, `AJOPOOL_SPUTNIK_BRIEF.md`, `PROJECT_SOURCE_OF_TRUTH.md` — product and protocol decisions and project notes.
+NEAR lets Ajocircle put the circle’s rules and payouts on-chain. Our prototype already supports Google and email sign-in through Privy, while the NEAR contract records contributions and enforces the payout order. The goal is to make those protections available through a familiar app experience, without asking members to manage blockchain details themselves.
 
-`clean-app/` is a separate starter/reference project, not the Ajocircle app. `edge-debug-profile/` is local browser data. Neither is part of the application source.
-
-## Run the web app
-
-Requirements: Node.js and npm.
-
-```powershell
-cd frontend
-npm install
-npm run dev
-```
-
-Vite serves the app at `http://localhost:5181/`. The production bundle can be built with `npm run build` from `frontend/`.
-
-## Contracts
-
-Both contracts are NEAR Rust projects. To run local checks/builds, use a Rust toolchain with the NEAR Wasm target installed:
-
-```powershell
-cd contracts/circle
-cargo test
-cargo check --target wasm32-unknown-unknown
-```
-
-The test-token contract is in `contracts/test-token/` and uses `near-contract-standards`. Testnet deployment and verification scripts are in `scripts/` and `frontend/scripts/`. They require testnet configuration and signing keys in ignored local environment files; never commit those keys.
-
-## Prototype boundary
-
-The frontend connects to NEAR testnet and includes signed flows for creating and joining circles, getting AJUSD test tokens, contributing, and requesting/confirming payouts. The contract enforces contribution and payout rules. Circle DAO creation and removal governance are not yet part of the regular frontend flow; contract-level DAO behavior has separate testnet notes in `PROJECT_SOURCE_OF_TRUTH.md`.
-
-Activity and round status are read from contract views; there is no event indexer or complete historical activity ledger. Display names are saved in the current browser and are not written to the contract. Review money-related actions on testnet only.
-
-## Testnet deployments
-
-- Circle contract: `ajopool.testnet`
-- Test token: `ajusd.ajopool.testnet` (`AJUSD`, six decimal places)
-- Network: NEAR testnet
-
-The on-chain account names retain the original `ajopool` identifier; the product brand is Ajocircle.
+## Related project
+https://github.com/oxkael/Ember
